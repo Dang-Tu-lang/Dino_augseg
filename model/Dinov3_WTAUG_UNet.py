@@ -947,12 +947,12 @@ class SupportGuidedAttention(nn.Module):
 
 # === Decoder with Cross-Attention and WT-augmentation ===
 class AttentionCrossDecoder_WT_ALL(nn.Module):
-    def __init__(self, enc_channels, final_channels=64, drop_rate=0.3, separate_channels=True, aug_all=True, aug_feat=False, random_choise= 0.7):
+    def __init__(self, enc_channels, final_channels=64, drop_rate=0.3, separate_channels=True, aug_all=True, aug_feat=False, random_choice= 0.7):
         super().__init__()
         c1, c2, c3, c4 = enc_channels
         self.aug_all = aug_all
         self.aug_feat = aug_feat
-        self.random_choise = random_choise
+        self.random_choice = random_choice
         if self.aug_feat: # do feature level augmentation:  spatial dimension
             self.augmentor = FeatureAugmentor(prob=0.7) 
 
@@ -1004,7 +1004,7 @@ class AttentionCrossDecoder_WT_ALL(nn.Module):
 
         if self.aug_all:
             prob = random.random()
-            if prob <= self.random_choise:
+            if prob <= self.random_choice:
                 f1 = self.wavelet_mask(f1)
                 f2 = self.wavelet_mask(f2)
                 f3 = self.wavelet_mask(f3)
@@ -1304,7 +1304,7 @@ class DINO_AugSeg(nn.Module):
         # CG-Fuse: do cross attention between encoder features and decoder features
         # WT-Aug: feature level augmenation on wavelet dimension, only used in training
         if decoder_type == "cross_guide_wt_unet": 
-            self.decoder = AttentionCrossDecoder_WT_ALL(self.enc_channels, final_channels=64, aug_all=use_wt_aug, aug_feat=aug_feat,random_choise=self.random_choice)
+            self.decoder = AttentionCrossDecoder_WT_ALL(self.enc_channels, final_channels=64, aug_all=use_wt_aug, aug_feat=aug_feat,random_choice=self.random_choice)
             decoder_out_channels = 64 
         else:
             raise ValueError("decoder_type must be one of 'attention_unet','segformer','deeplabv3plus'")
@@ -1420,7 +1420,7 @@ if __name__ == '__main__':
     for dec in DECODER_TYPE:
         print("Testing decoder:", dec)
         # build segmentation model
-        model = DINO_AugSeg_Fewshot(encoder, num_classes=2, model_type=MODEL_TYPE[NUM], decoder_type=dec)   # 1 = binary mask
+        model = DINO_AugSeg(encoder, num_classes=2, model_type=MODEL_TYPE[NUM], decoder_type=dec)   # 1 = binary mask
         # print(model)
         model = model.to(device)
         # model.eval()

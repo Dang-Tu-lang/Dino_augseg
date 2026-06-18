@@ -216,9 +216,10 @@ def lovasz_grad(gt_sorted):
 
 class LovaszSoftmaxLoss(nn.Module):
     """Lovasz-Softmax Loss tối ưu trực tiếp cho chỉ số mIoU."""
-    def __init__(self, ignore_index: int = 255):
+    def __init__(self, num_classes: int = 7, ignore_index: int = 255):
         super().__init__()
         self.ignore_index = ignore_index
+        self.num_classes = num_classes
 
     def forward(self, preds, targets):
         # preds: [B, C, H, W] logits | targets: [B, H, W] long
@@ -237,17 +238,17 @@ class LovaszSoftmaxLoss(nn.Module):
         targets = targets[valid_mask]
 
         loss = 0.0
-        # Chỉ tính toán trên các class thực sự xuất hiện trong batch hiện tại
-        class_ids = torch.unique(targets)
-
-        for c in class_ids:
+        # DUYỆT QUA TẤT CẢ CLASS (không chỉ unique(targets))
+        # → Nếu model dự đoán ra class C mà targets không có C,
+        #   errors vẫn lớn → Loss vẫn phạt → giảm False Positives.
+        for c in range(self.num_classes):
             fg = (targets == c).float() # Mảng nhị phân cho class hiện tại
             errors = (fg - preds[:, c]).abs()
             errors_sorted, perm = torch.sort(errors, 0, descending=True)
             fg_sorted = fg[perm]
             loss += torch.dot(errors_sorted, lovasz_grad(fg_sorted))
             
-        return loss / len(class_ids)
+        return loss / self.num_classes
 
 # ---------------------------------------------------------------------------
 # OHEM Cross Entropy Loss
@@ -316,7 +317,7 @@ class CombinedHardLoss(nn.Module):
         
         # Khởi tạo 2 loss thành phần
         self.ohem_ce = OHEMCrossEntropyLoss(ignore_index=ignore_index, keep_ratio=keep_ratio, weight=class_weights)
-        self.lovasz = LovaszSoftmaxLoss(ignore_index=ignore_index)
+        self.lovasz = LovaszSoftmaxLoss(num_classes=num_classes, ignore_index=ignore_index)
         self.focus = FocalLoss(ignore_index=ignore_index, gamma=2.0)
 
     def forward(self, preds, targets):
@@ -501,14 +502,16 @@ def validate_metrics(model, loader, device, num_classes: int = 7,
             p = pred_np[b]
             t = mask_np[b]
             
+            valid_mask = (t != 255)
+            
             if kernel is None:
                 img_diagonal = np.sqrt(p.shape[0]**2 + p.shape[1]**2)
                 dilation_size = max(1, int(round(dilation_ratio * img_diagonal)))
                 kernel = np.ones((dilation_size, dilation_size), np.uint8)
 
             for i, c in enumerate(class_range):
-                pred_c   = (p == c).astype(np.uint8)
-                target_c = (t == c).astype(np.uint8)
+                pred_c   = ((p == c) & valid_mask).astype(np.uint8)
+                target_c = ((t == c) & valid_mask).astype(np.uint8)
                 
                 # --- Metrics gốc (mIoU, P, R) ---
                 tp = (pred_c & target_c).sum()
@@ -791,7 +794,7 @@ def main():
             img_size=args.img_size, mask_suffix=args.mask_suffix,
             images_dir=args.images_dir, labels_dir=args.labels_dir,
         )
-        val_dataset = EpisodicDataset(base_val_dataset, num_support=5, num_query=4, episodes_per_epoch=100)
+        val_dataset = EpisodicDataset(base_val_dataset, num_support=5, num_query=4, episodes_per_epoch=100, deterministic=True)
         val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
     # ---- Backbone: load từ file .pth ----
@@ -810,7 +813,6 @@ def main():
         use_wt_aug=args.use_wt_aug,
         # aug_feat=False,
     ).to(device)
-    weights = torch.tensor([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0], dtype=torch.float).cuda()
     # ---- Optimizer & Loss ----
     # Chỉ tối ưu decoder (encoder đã được freeze trong DINO_AugSeg.__init__)
     trainable = [p for p in model.parameters() if p.requires_grad]
@@ -909,7 +911,7 @@ def main():
     # ---- Final evaluation trên val set ----
     test_loader = None
     test_img_dir = os.path.join(args.data_root, args.images_dir, "test")
-    if os.path.isdir(val_img_dir) and any(
+    if os.path.isdir(test_img_dir) and any(
         os.path.splitext(f)[1].lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
         for f in os.listdir(test_img_dir)
     ):
@@ -919,9 +921,9 @@ def main():
             img_size=args.img_size, mask_suffix=args.mask_suffix,
             images_dir=args.images_dir, labels_dir=args.labels_dir,
         )
-        test_dataset = EpisodicDataset(base_test_dataset, num_support=5, num_query=4, episodes_per_epoch=100)
+        test_dataset = EpisodicDataset(base_test_dataset, num_support=5, num_query=4, episodes_per_epoch=100, deterministic=True)
         test_loader = DataLoader(
-            test_dataset, batch_size=args.batch_size,
+            test_dataset, batch_size=1,
             shuffle=False, num_workers=args.num_workers, pin_memory=True,
         )
     if test_loader is not None:
@@ -929,7 +931,7 @@ def main():
         print("  Final Validation Metrics (full dataset)")
         print("="*60)
         m = validate_metrics(
-            model, val_loader, device,
+            model, test_loader, device,
             num_classes=args.num_classes,
             ignore_background=True,
         )

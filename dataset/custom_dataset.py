@@ -211,8 +211,10 @@ class CustomDataset(Dataset):
             # Bất kể mask là 1, 2 hay 255, cứ lớn hơn 0 là tính làm vật thể.
             mask_np = (mask_np > 0).astype(np.uint8)
         else:
-            # Multi-class: Giữ nguyên các giá trị 0, 1, 2...
-            mask_np = np.clip(mask_np, 0, self.num_classes - 1).astype(np.uint8)
+            # Multi-class: Giữ nguyên 0..num_classes-1,
+            # mọi giá trị khác (bao gồm 255) → 255 (ignore_index)
+            # TRƯỚC ĐÂY: np.clip ép 255 → class 6, gây nhiễu Loss.
+            mask_np = np.where(mask_np < self.num_classes, mask_np, 255).astype(np.uint8)
 
         mask_tensor = torch.from_numpy(mask_np).long()   # [H, W]  # [H, W]
 
@@ -297,11 +299,12 @@ class EpisodicDataset(Dataset):
     Class bọc (Wrapper) biến CustomDataset gốc thành tập dữ liệu Episodic.
     Đã được nâng cấp lên Class-Aware Sampling để trị các class cực hiếm.
     """
-    def __init__(self, base_dataset: CustomDataset, num_support=15, num_query=1, episodes_per_epoch=500):
+    def __init__(self, base_dataset: CustomDataset, num_support=15, num_query=1, episodes_per_epoch=500, deterministic=False):
         self.base = base_dataset
         self.num_support = num_support
         self.num_query = num_query
-        self.episodes_per_epoch = episodes_per_epoch 
+        self.episodes_per_epoch = episodes_per_epoch
+        self.deterministic = deterministic  # True cho Val/Test để kết quả lặp lại được
         
         print(f"[{self.base.split.upper()}] Đang quét toàn bộ Mask để xây dựng Class-Aware Sampler (Khoảng 5-15 giây)...")
         from PIL import Image
@@ -331,32 +334,73 @@ class EpisodicDataset(Dataset):
         return self.episodes_per_epoch
 
     def __getitem__(self, idx):
+        # Khi deterministic=True (Val/Test): dùng RNG cục bộ seed theo idx
+        # → cùng idx luôn cho ra cùng episode → kết quả Validation ổn định.
+        # Khi deterministic=False (Train): dùng RNG toàn cục → ngẫu nhiên mỗi lần.
+        if self.deterministic:
+            rng = random.Random(idx + 9999)
+        else:
+            rng = random
+
         supp_idx_set = set()
         
         # 1. Bốc thăm có chủ đích (Ép các class phải xuất hiện)
+        chosen_classes = []
         if len(self.available_classes) > 0:
-            # Ưu tiên nhặt ngẫu nhiên N class để bỏ vào Support
-            # (Nếu num_support nhỏ hơn số class, bốc random N class. Nếu lớn hơn, bốc tất cả)
             k_classes = min(self.num_support, len(self.available_classes))
-            chosen_classes = random.sample(self.available_classes, k=k_classes)
+            chosen_classes = rng.sample(self.available_classes, k=k_classes)
             
             for c in chosen_classes:
-                chosen_idx = random.choice(self.class_to_indices[c])
+                chosen_idx = rng.choice(self.class_to_indices[c])
                 supp_idx_set.add(chosen_idx)
                 
         # 2. Bốc ngẫu nhiên thêm cho đủ num_support
         supp_idx = list(supp_idx_set)
         while len(supp_idx) < self.num_support:
-            candidate = random.randint(0, len(self.base) - 1)
+            candidate = rng.randint(0, len(self.base) - 1)
             if candidate not in supp_idx:
                 supp_idx.append(candidate)
                 
-        # 3. Bốc Query Set (không trùng Support)
+        # 3. Bốc Query Set — ĐỒNG BỘ VỚI SUPPORT SET
         query_idx = []
+        query_idx_set = set()
+        
+        if len(chosen_classes) > 0:
+            # Bước 3a: Ép mỗi chosen_class có ít nhất 1 ảnh trong Query
+            classes_for_query = list(chosen_classes)
+            rng.shuffle(classes_for_query)
+            
+            for c in classes_for_query:
+                if len(query_idx) >= self.num_query:
+                    break
+                candidates = [i for i in self.class_to_indices[c] 
+                              if i not in supp_idx and i not in query_idx_set]
+                if len(candidates) > 0:
+                    chosen = rng.choice(candidates)
+                    query_idx.append(chosen)
+                    query_idx_set.add(chosen)
+        
+        # Bước 3b: Bốc thêm từ pool các class đã chọn
+        if len(query_idx) < self.num_query and len(chosen_classes) > 0:
+            class_aware_pool = []
+            for c in chosen_classes:
+                class_aware_pool.extend(self.class_to_indices[c])
+            class_aware_pool = list(set(class_aware_pool))
+            rng.shuffle(class_aware_pool)
+            
+            for candidate in class_aware_pool:
+                if len(query_idx) >= self.num_query:
+                    break
+                if candidate not in supp_idx and candidate not in query_idx_set:
+                    query_idx.append(candidate)
+                    query_idx_set.add(candidate)
+        
+        # Bước 3c: Fallback
         while len(query_idx) < self.num_query:
-            candidate = random.randint(0, len(self.base) - 1)
-            if candidate not in supp_idx and candidate not in query_idx:
+            candidate = rng.randint(0, len(self.base) - 1)
+            if candidate not in supp_idx and candidate not in query_idx_set:
                 query_idx.append(candidate)
+                query_idx_set.add(candidate)
 
         # 4. Load Tensor
         s_imgs, s_masks = [], []
