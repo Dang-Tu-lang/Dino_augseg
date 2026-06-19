@@ -33,6 +33,7 @@ Kiểm tra thống kê dataset:
 """
 
 import os
+import time
 import argparse
 import numpy as np
 import torch
@@ -42,6 +43,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from PIL import Image
+from tqdm import tqdm
 
 from dataset.custom_dataset import CustomDataset,EpisodicDataset
 from model.Dinov3_WTAUG_UNet import DINO_AugSeg
@@ -365,40 +367,46 @@ class CombinedHardLoss(nn.Module):
 #     return total_loss / len(loader.dataset)
 
 # ---------------------------------------------------------------------------
-# Training loop (15-Shot Episodic - Safe VRAM)
+# Training loop (K-Shot Episodic + Gradient Accumulation cho GPU mạnh)
 # ---------------------------------------------------------------------------
-def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None):
+def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None,
+                    grad_accum_steps=1, split_size=3):
+    """
+    Episodic training với Gradient Accumulation.
+    - grad_accum_steps: Số episode cộng dồn gradient trước khi step.
+                        Hiệu quả tương đương batch = grad_accum_steps.
+    - split_size:       Số ảnh support xử lý cùng lúc khi trích prototype.
+                        GPU mạnh (Blackwell) có thể đẩy lên 8-15.
+    """
     model.train()
     total_loss = 0.0
+    total_samples = 0
+    optimizer.zero_grad()  # Zero grad 1 lần ở đầu
 
-    for s_imgs, s_masks, q_imgs, q_masks in loader:
-        # Xóa chiều batch (vì batch_size=1)
-        s_imgs, s_masks = s_imgs.squeeze(0), s_masks.squeeze(0)  # [15, 3, H, W]
-        q_imgs, q_masks = q_imgs.squeeze(0), q_masks.squeeze(0)  # [N_query, 3, H, W]
-
-        optimizer.zero_grad()
+    pbar = tqdm(enumerate(loader), total=len(loader), desc="Training", leave=False)
+    for step_idx, (s_imgs, s_masks, q_imgs, q_masks) in pbar:
+        # Xóa chiều batch (vì DataLoader batch_size=1)
+        s_imgs, s_masks = s_imgs.squeeze(0), s_masks.squeeze(0)
+        q_imgs, q_masks = q_imgs.squeeze(0), q_masks.squeeze(0)
 
         # ==========================================
-        # 1. RÚT PROTOTYPE TỪ 15 ẢNH SUPPORT (No Grad)
+        # 1. RÚT PROTOTYPE TỪ SUPPORT SET (No Grad)
         # ==========================================
         protos_list = []
-        split_size = 3       # Chunking an toàn VRAM
 
         with torch.no_grad():
             for i in range(0, s_imgs.size(0), split_size):
                 mini_s = s_imgs[i : i+split_size].to(device)
                 mini_m = s_masks[i : i+split_size].to(device)
-                
-                # Prototype luôn là [N_classes, K, dim]
-                mini_p = model.compute_prototype(mini_s, mini_m) 
+                mini_p = model.compute_prototype(mini_s, mini_m)
                 protos_list.append(mini_p)
 
-        # Gộp tất cả K prototypes từ các chunk lại với nhau dọc theo chiều K (dim=1)
-        final_prototypes = torch.cat(protos_list, dim=1) # [N_classes, K * chunks, 256]
+        final_prototypes = torch.cat(protos_list, dim=1)
         final_prototypes = F.normalize(final_prototypes, p=2, dim=-1)
 
         # ==========================================
-        # 2. HỌC TỪ ẢNH QUERY (With Grad)
+        # 2. HỌC TỪ QUERY SET (With Grad)
+        #    Loss chia cho grad_accum_steps để giữ scale gradient ổn định
         # ==========================================
         q_imgs = q_imgs.to(device)
         q_masks = q_masks.to(device)
@@ -406,30 +414,42 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None):
         if scaler is not None:
             from torch.cuda.amp import autocast
             with autocast():
-                # Truyền final_prototypes vào để đoán ảnh lạ (Query)
                 preds = model(q_imgs, prototypes=final_prototypes, targets=q_masks)
-                loss  = criterion(preds, q_masks)
+                loss  = criterion(preds, q_masks) / grad_accum_steps
             scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
         else:
             preds = model(q_imgs, prototypes=final_prototypes, targets=q_masks)
-            loss  = criterion(preds, q_masks)
+            loss  = criterion(preds, q_masks) / grad_accum_steps
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
 
-        total_loss += loss.item() * q_imgs.size(0)
+        current_loss_val = loss.item() * grad_accum_steps
+        pbar.set_postfix(loss=f"{current_loss_val:.4f}")
+        
+        total_loss += current_loss_val * q_imgs.size(0)
+        total_samples += q_imgs.size(0)
 
-    return total_loss / (len(loader) * q_imgs.size(0))
+        # ==========================================
+        # 3. STEP OPTIMIZER sau mỗi grad_accum_steps episodes
+        # ==========================================
+        if (step_idx + 1) % grad_accum_steps == 0 or (step_idx + 1) == len(loader):
+            if scaler is not None:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+            optimizer.zero_grad()
+
+    return total_loss / max(total_samples, 1)
 
 @torch.no_grad()
 def validate(model, loader, criterion, device):
     model.eval()
     total_loss = 0.0
-    for s_imgs, s_masks, q_imgs, q_masks in loader:
+    pbar = tqdm(loader, desc="Validation", leave=False)
+    for s_imgs, s_masks, q_imgs, q_masks in pbar:
         s_imgs, s_masks = s_imgs.squeeze(0).to(device), s_masks.squeeze(0).to(device)
         q_imgs, q_masks = q_imgs.squeeze(0).to(device), q_masks.squeeze(0).to(device)
         
@@ -455,14 +475,10 @@ def validate_metrics(model, loader, device, num_classes: int = 7,
     fn_arr   = np.zeros(n_cls, dtype=np.float64)
     dice_num = np.zeros(n_cls, dtype=np.float64)
     dice_den = np.zeros(n_cls, dtype=np.float64)
-    
-    biou_inter = np.zeros(n_cls, dtype=np.float64)
-    biou_union = np.zeros(n_cls, dtype=np.float64)
-
-    kernel = None 
 
     # 1. THAY ĐỔI LOADER: Nhận 4 biến từ EpisodicDataset
-    for s_imgs, s_masks, q_imgs, q_masks in loader:
+    pbar = tqdm(loader, desc="Eval Metrics", leave=False)
+    for s_imgs, s_masks, q_imgs, q_masks in pbar:
         # Squeeze bỏ chiều batch=1 của Episodic DataLoader
         s_imgs  = s_imgs.squeeze(0).to(device)
         s_masks = s_masks.squeeze(0).to(device)
@@ -503,11 +519,6 @@ def validate_metrics(model, loader, device, num_classes: int = 7,
             t = mask_np[b]
             
             valid_mask = (t != 255)
-            
-            if kernel is None:
-                img_diagonal = np.sqrt(p.shape[0]**2 + p.shape[1]**2)
-                dilation_size = max(1, int(round(dilation_ratio * img_diagonal)))
-                kernel = np.ones((dilation_size, dilation_size), np.uint8)
 
             for i, c in enumerate(class_range):
                 pred_c   = ((p == c) & valid_mask).astype(np.uint8)
@@ -522,48 +533,22 @@ def validate_metrics(model, loader, device, num_classes: int = 7,
                 fn_arr[i]  += fn
                 dice_num[i] += 2 * tp
                 dice_den[i] += pred_c.sum() + target_c.sum()
-                
-                # --- Boundary IoU ---
-                if target_c.sum() == 0 and pred_c.sum() == 0:
-                    biou_inter[i] += 1.0 
-                    biou_union[i] += 1.0
-                    continue
-                if target_c.sum() == 0 or pred_c.sum() == 0:
-                    biou_union[i] += 1.0 
-                    continue
-
-                gt_dilate = cv2.dilate(target_c, kernel, iterations=1)
-                gt_erode  = cv2.erode(target_c, kernel, iterations=1)
-                bound_gt  = gt_dilate - gt_erode
-
-                pred_dilate = cv2.dilate(pred_c, kernel, iterations=1)
-                pred_erode  = cv2.erode(pred_c, kernel, iterations=1)
-                bound_pred  = pred_dilate - pred_erode
-
-                inter_bound = ((bound_gt > 0) & (bound_pred > 0) & (pred_c == target_c)).sum()
-                union_bound = ((bound_gt > 0) | (bound_pred > 0)).sum()
-
-                biou_inter[i] += inter_bound
-                biou_union[i] += union_bound
 
     smooth = 1e-8
     precision_list = (tp_arr / (tp_arr + fp_arr + smooth)).tolist()
     recall_list    = (tp_arr / (tp_arr + fn_arr + smooth)).tolist()
     iou_list       = (tp_arr / (tp_arr + fp_arr + fn_arr + smooth)).tolist()
     dice_list      = ((dice_num + smooth) / (dice_den + smooth)).tolist()
-    biou_list      = (biou_inter / (biou_union + smooth)).tolist()
 
     return {
         "precision" : precision_list,
         "recall"    : recall_list,
         "iou"       : iou_list,
         "dice"      : dice_list,
-        "biou"      : biou_list,
         "mean_precision" : float(np.mean(precision_list)),
         "mean_recall"    : float(np.mean(recall_list)),
         "mean_iou"       : float(np.mean(iou_list)),
         "mean_dice"      : float(np.mean(dice_list)),
-        "mean_biou"      : float(np.mean(biou_list)),
     }
 
 
@@ -743,6 +728,19 @@ def main():
                         help="Dùng Automatic Mixed Precision (tiết kiệm VRAM)")
     parser.add_argument("--num_workers", type=int, default=4)
 
+    # GPU Utilization — Tận dụng sức mạnh GPU hạng nặng (Blackwell, H100, ...)
+    parser.add_argument("--grad_accum",  type=int, default=1,
+                        help="Gradient Accumulation: cộng dồn N episodes trước khi step. "
+                             "Hiệu quả = batch_size * grad_accum. VD: --grad_accum 8")
+    parser.add_argument("--num_support", type=int, default=5,
+                        help="Số ảnh support mỗi episode (mặc định 5, có thể 10-15)")
+    parser.add_argument("--num_query",   type=int, default=4,
+                        help="Số ảnh query mỗi episode (mặc định 4, GPU mạnh đẩy 8-16)")
+    parser.add_argument("--split_size",  type=int, default=3,
+                        help="Chunk size khi trích prototype support (mặc định 3, GPU mạnh đẩy 8-15)")
+    parser.add_argument("--episodes_per_epoch", type=int, default=400,
+                        help="Số episodes mỗi epoch training")
+
     args = parser.parse_args()
 
     # ---- Device ----
@@ -775,11 +773,19 @@ def main():
         mask_suffix=args.mask_suffix,
         images_dir=args.images_dir, labels_dir=args.labels_dir,
     )
-    train_dataset = EpisodicDataset(base_train_dataset, num_support=5, num_query=4, episodes_per_epoch=400)
+    train_dataset = EpisodicDataset(base_train_dataset, num_support=args.num_support,
+                                    num_query=args.num_query, episodes_per_epoch=args.episodes_per_epoch)
     train_loader = DataLoader(
         train_dataset, batch_size=1,
         shuffle=True, num_workers=args.num_workers, pin_memory=True,
     )
+    print(f"\n🚀 GPU Utilization Config:")
+    print(f"   Support/episode : {args.num_support}")
+    print(f"   Query/episode   : {args.num_query}")
+    print(f"   Grad Accumulation: {args.grad_accum} episodes")
+    print(f"   Effective batch : {args.num_query} × {args.grad_accum} = {args.num_query * args.grad_accum} query images/step")
+    print(f"   Split size      : {args.split_size}")
+    print(f"   Episodes/epoch  : {args.episodes_per_epoch}\n")
 
     # Val loader (tùy chọn) — kiểm tra sự tồn tại của thư mục Images/val/
     val_loader = None
@@ -794,7 +800,8 @@ def main():
             img_size=args.img_size, mask_suffix=args.mask_suffix,
             images_dir=args.images_dir, labels_dir=args.labels_dir,
         )
-        val_dataset = EpisodicDataset(base_val_dataset, num_support=5, num_query=4, episodes_per_epoch=100, deterministic=True)
+        val_dataset = EpisodicDataset(base_val_dataset, num_support=args.num_support,
+                                      num_query=args.num_query, episodes_per_epoch=100, deterministic=True)
         val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
     # ---- Backbone: load từ file .pth ----
@@ -841,6 +848,8 @@ def main():
     METRICS_EVERY = max(1, args.epochs // 100)  # tối đa ~20 lần trong quá trình train
 
     for epoch in range(1, args.epochs + 1):
+        epoch_start_time = time.time()
+        
         if epoch < args.epochs * 0.5:
             # 50% thời gian đầu: Giữ nguyên mức nhiễu tối đa để chống Overfitting
             current_prob = 0.7
@@ -848,11 +857,15 @@ def main():
             # 50% thời gian sau: Giảm tuyến tính từ 0.7 về 0 để gọt đường viền sắc nét
             current_prob = 0.7 * (1.0 - (epoch - args.epochs * 0.5) / (args.epochs * 0.5))
         model.update_random_choice(current_prob)
-        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, scaler)
+        train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device, scaler,
+                                     grad_accum_steps=args.grad_accum, split_size=args.split_size)
         scheduler.step()
         current_lr = optimizer.param_groups[0]['lr']
         
-        log_line = f"Epoch {epoch}/{args.epochs} | LR: {current_lr:.6e} | Train Loss: {train_loss:.4f}"
+        epoch_end_time = time.time()
+        epoch_duration = epoch_end_time - epoch_start_time
+        
+        log_line = f"Epoch {epoch}/{args.epochs} [{epoch_duration:.1f}s] | LR: {current_lr:.6e} | Train Loss: {train_loss:.4f}"
 
         if val_loader is not None:
             val_loss = validate(model, val_loader, criterion, device)
@@ -921,7 +934,8 @@ def main():
             img_size=args.img_size, mask_suffix=args.mask_suffix,
             images_dir=args.images_dir, labels_dir=args.labels_dir,
         )
-        test_dataset = EpisodicDataset(base_test_dataset, num_support=5, num_query=4, episodes_per_epoch=100, deterministic=True)
+        test_dataset = EpisodicDataset(base_test_dataset, num_support=args.num_support,
+                                       num_query=args.num_query, episodes_per_epoch=100, deterministic=True)
         test_loader = DataLoader(
             test_dataset, batch_size=1,
             shuffle=False, num_workers=args.num_workers, pin_memory=True,

@@ -1,0 +1,113 @@
+Epoch 1/100 | LR: 3.800000e-06 | Train Loss: 2.8484 | Val Loss: 1.2244 | mP=9.95% mR=15.56% mIoU=6.25% mDice=11.24% ← best IoU ← best loss
+Epoch 2/100 | LR: 7.100000e-06 | Train Loss: 2.7510 | Val Loss: 1.1408 | mP=13.96% mR=19.86% mIoU=8.73% mDice=15.14% ← best IoU ← best loss
+Epoch 1/100 [38.7s] | LR: 3.800000e-06 | Train Loss: 2.7200 | Val Loss: 1.2311 | mP=9.70% mR=15.24% mIoU=6.11% mDice=10.99% ← best IoU ← best loss
+Epoch 2/100 [34.3s] | LR: 7.100000e-06 | Train Loss: 2.7786 | Val Loss: 1.2085 | mP=10.20% mR=15.71% mIoU=6.39% mDice=11.46% ← best IoU ← best loss
+Epoch 1/100 [138.0s] | LR: 3.800000e-06 | Train Loss: 2.8360 | Val Loss: 1.2237 | mP=9.99% mR=15.42% mIoU=6.26% mDice=11.26% ← best IoU ← best loss
+Epoch 2/100 [133.4s] | LR: 7.100000e-06 | Train Loss: 2.6075 | Val Loss: 1.1377 | mP=13.95% mR=19.41% mIoU=8.66% mDice=15.02% ← best IoU ← best loss
+Epoch 3/100 [133.2s] | LR: 1.040000e-05 | Train Loss: 2.4425 | Val Loss: 0.9604 | mP=27.01% mR=28.77% mIoU=17.15% mDice=25.62% ← best IoU ← best loss
+Epoch 4/100 [133.3s] | LR: 1.370000e-05 | Train Loss: 2.3944 | Val Loss: 0.8944 | mP=34.98% mR=37.17% mIoU=23.69% mDice=33.40% ← best IoU ← best loss
+Epoch 5/100 [133.3s] | LR: 1.700000e-05 | Train Loss: 2.1259 | Val Loss: 0.8884 | mP=37.15% mR=38.99% mIoU=25.86% mDice=35.65% ← best IoU ← best loss
+Epoch 6/100 [133.5s] | LR: 2.030000e-05 | Train Loss: 2.0145 | Val Loss: 0.8725 | mP=36.10% mR=42.22% mIoU=26.27% mDice=36.22% ← best IoU ← best loss
+Epoch 7/100 [133.1s] | LR: 2.360000e-05 | Train Loss: 2.0433 | Val Loss: 0.8702 | mP=36.88% mR=46.40% mIoU=28.61% mDice=38.73% ← best IoU ← best loss
+Epoch 8/100 [133.1s] | LR: 2.690000e-05 | Train Loss: 1.8863 | Val Loss: 0.8395 | mP=38.72% mR=47.14% mIoU=31.13% mDice=40.90% ← best IoU ← best loss
+Epoch 9/100 [133.2s] | LR: 3.020000e-05 | Train Loss: 2.0548 | Val Loss: 0.8826 | mP=41.35% mR=47.29% mIoU=33.18% mDice=42.61% ← best IoU
+Epoch 10/100 [132.8s] | LR: 3.350000e-05 | Train Loss: 2.0514 | Val Loss: 0.8538 | mP=41.40% mR=50.06% mIoU=34.22% mDice=44.01% ← best IoU
+Epoch 11/100 [133.2s] | LR: 3.680000e-05 | Train Loss: 1.7102 | Val Loss: 0.8145 | mP=44.80% mR=49.76% mIoU=35.71% mDice=45.49% ← best IoU ← best loss
+Epoch 12/100 [133.3s] | LR: 4.010000e-05 | Train Loss: 1.7280 | Val Loss: 0.8277 | mP=44.43% mR=52.95% mIoU=36.73% mDice=46.65% ← best IoU
+Epoch 13/100 [133.6s] | LR: 4.340000e-05 | Train Loss: 1.7423 | Val Loss: 0.7997 | mP=45.09% mR=54.04% mIoU=37.61% mDice=47.52% ← best IoU ← best loss
+Epoch 14/100 [133.3s] | LR: 4.670000e-05 | Train Loss: 1.6922 | Val Loss: 0.7856 | mP=48.12% mR=52.41% mIoU=38.45% mDice=48.70% ← best IoU ← best loss
+Epoch 15/100 [133.6s] | LR: 5.000000e-05 | Train Loss: 1.7287 | Val Loss: 0.7951 | mP=47.50% mR=53.29% mIoU=38.74% mDice=48.67% ← best IoU
+Epoch 16/100 [132.9s] | LR: 4.998327e-05 | Train Loss: 1.7009 | Val Loss: 0.7586 | mP=45.76% mR=56.65% mIoU=38.81% mDice=48.52% ← best IoU ← best loss
+Epoch 17/100 [133.4s] | LR: 4.993309e-05 | Train Loss: 1.7050 | Val Loss: 0.7870 | mP=47.65% mR=55.76% mIoU=38.98% mDice=49.04% ← best IoU
+Epoch 18/100 [133.3s] | LR: 4.984955e-05 | Train Loss: 1.6684 | Val Loss: 0.7704 | mP=51.04% mR=56.37% mIoU=42.43% mDice=52.24% ← best IoU
+Epoch 19/100 [133.5s] | LR: 4.973274e-05 | Train Loss: 1.5206 | Val Loss: 0.7886 | mP=49.56% mR=55.61% mIoU=40.62% mDice=50.77%
+Epoch 20/100 [133.0s] | LR: 4.958284e-05 | Train Loss: 1.7822 | Val Loss: 0.7521 | mP=47.17% mR=55.69% mIoU=38.93% mDice=48.84% ← best loss
+Epoch 21/100 [132.8s] | LR: 4.940004e-05 | Train Loss: 1.4951 | Val Loss: 0.7870 | mP=48.33% mR=54.91% mIoU=39.99% mDice=49.76%
+Epoch 22/100 [133.4s] | LR: 4.918460e-05 | Train Loss: 1.5372 | Val Loss: 0.7769 | mP=45.55% mR=55.14% mIoU=37.44% mDice=47.61%
+Epoch 23/100 [132.9s] | LR: 4.893681e-05 | Train Loss: 1.5404 | Val Loss: 0.7892 | mP=47.70% mR=57.10% mIoU=40.03% mDice=50.15%
+Epoch 24/100 [133.2s] | LR: 4.865700e-05 | Train Loss: 1.6284 | Val Loss: 0.7833 | mP=47.16% mR=56.66% mIoU=40.65% mDice=49.88%
+Epoch 25/100 [133.1s] | LR: 4.834557e-05 | Train Loss: 1.6994 | Val Loss: 0.7458 | mP=46.13% mR=56.22% mIoU=39.22% mDice=48.35% ← best loss
+Epoch 26/100 [133.4s] | LR: 4.800293e-05 | Train Loss: 1.3328 | Val Loss: 0.7600 | mP=47.85% mR=55.90% mIoU=39.61% mDice=49.39%
+Epoch 27/100 [133.4s] | LR: 4.762956e-05 | Train Loss: 1.4715 | Val Loss: 0.7669 | mP=45.03% mR=56.44% mIoU=37.80% mDice=47.62%
+Epoch 28/100 [133.5s] | LR: 4.722596e-05 | Train Loss: 1.4724 | Val Loss: 0.7473 | mP=47.49% mR=57.43% mIoU=39.50% mDice=49.04%
+Epoch 29/100 [133.4s] | LR: 4.679268e-05 | Train Loss: 1.3497 | Val Loss: 0.7298 | mP=47.03% mR=56.37% mIoU=39.29% mDice=48.66% ← best loss
+Epoch 30/100 [133.4s] | LR: 4.633032e-05 | Train Loss: 1.4268 | Val Loss: 0.7364 | mP=47.85% mR=57.69% mIoU=40.61% mDice=50.75%
+Epoch 31/100 [133.2s] | LR: 4.583951e-05 | Train Loss: 1.4743 | Val Loss: 0.7462 | mP=47.75% mR=55.74% mIoU=40.28% mDice=49.77%
+Epoch 32/100 [133.2s] | LR: 4.532092e-05 | Train Loss: 1.5162 | Val Loss: 0.7342 | mP=49.31% mR=57.14% mIoU=41.58% mDice=51.22%
+Epoch 33/100 [133.3s] | LR: 4.477525e-05 | Train Loss: 1.5219 | Val Loss: 0.7320 | mP=44.75% mR=56.81% mIoU=38.45% mDice=48.11%
+Epoch 34/100 [133.6s] | LR: 4.420326e-05 | Train Loss: 1.3874 | Val Loss: 0.7365 | mP=49.69% mR=56.96% mIoU=41.66% mDice=51.31%
+Epoch 35/100 [133.1s] | LR: 4.360572e-05 | Train Loss: 1.5029 | Val Loss: 0.7705 | mP=47.66% mR=57.05% mIoU=40.80% mDice=50.33%
+Epoch 36/100 [133.3s] | LR: 4.298345e-05 | Train Loss: 1.3510 | Val Loss: 0.7448 | mP=48.87% mR=56.23% mIoU=41.12% mDice=50.52%
+Epoch 37/100 [133.2s] | LR: 4.233730e-05 | Train Loss: 1.4952 | Val Loss: 0.7248 | mP=48.85% mR=57.31% mIoU=41.59% mDice=51.15% ← best loss
+Epoch 38/100 [133.2s] | LR: 4.166815e-05 | Train Loss: 1.3213 | Val Loss: 0.7418 | mP=47.00% mR=57.61% mIoU=39.58% mDice=49.29%
+Epoch 39/100 [133.3s] | LR: 4.097692e-05 | Train Loss: 1.4013 | Val Loss: 0.7159 | mP=46.83% mR=59.22% mIoU=39.77% mDice=49.22% ← best loss
+Epoch 40/100 [133.2s] | LR: 4.026455e-05 | Train Loss: 1.2611 | Val Loss: 0.7402 | mP=49.23% mR=56.54% mIoU=40.98% mDice=50.49%
+Epoch 41/100 [133.0s] | LR: 3.953201e-05 | Train Loss: 1.3525 | Val Loss: 0.6991 | mP=54.79% mR=57.67% mIoU=44.07% mDice=53.88% ← best IoU ← best loss
+Epoch 42/100 [133.3s] | LR: 3.878031e-05 | Train Loss: 1.2491 | Val Loss: 0.7326 | mP=44.72% mR=56.85% mIoU=38.67% mDice=48.21%
+Epoch 43/100 [133.4s] | LR: 3.801046e-05 | Train Loss: 1.2304 | Val Loss: 0.6949 | mP=47.02% mR=57.14% mIoU=39.83% mDice=49.08% ← best loss
+Epoch 44/100 [133.3s] | LR: 3.722353e-05 | Train Loss: 1.3054 | Val Loss: 0.6918 | mP=54.60% mR=58.27% mIoU=45.18% mDice=54.68% ← best IoU ← best loss
+Epoch 45/100 [133.3s] | LR: 3.642059e-05 | Train Loss: 1.1466 | Val Loss: 0.7097 | mP=50.43% mR=58.23% mIoU=42.43% mDice=52.20%
+Epoch 46/100 [133.3s] | LR: 3.560273e-05 | Train Loss: 1.3565 | Val Loss: 0.6938 | mP=48.12% mR=57.77% mIoU=40.97% mDice=50.43%
+Epoch 47/100 [133.3s] | LR: 3.477107e-05 | Train Loss: 1.1991 | Val Loss: 0.7060 | mP=52.03% mR=59.99% mIoU=43.63% mDice=53.56%
+Epoch 48/100 [133.4s] | LR: 3.392675e-05 | Train Loss: 1.3174 | Val Loss: 0.7025 | mP=49.32% mR=58.82% mIoU=41.82% mDice=51.65%
+Epoch 49/100 [133.2s] | LR: 3.307092e-05 | Train Loss: 1.2576 | Val Loss: 0.6983 | mP=48.85% mR=58.63% mIoU=41.13% mDice=50.61%
+Epoch 50/100 [133.1s] | LR: 3.220474e-05 | Train Loss: 1.2279 | Val Loss: 0.6750 | mP=47.17% mR=60.28% mIoU=40.56% mDice=50.51% ← best loss
+Epoch 51/100 [133.3s] | LR: 3.132941e-05 | Train Loss: 1.1996 | Val Loss: 0.6814 | mP=54.27% mR=60.48% mIoU=45.66% mDice=55.25% ← best IoU
+Epoch 52/100 [133.4s] | LR: 3.044612e-05 | Train Loss: 1.1408 | Val Loss: 0.6675 | mP=50.30% mR=59.87% mIoU=43.09% mDice=52.52% ← best loss
+Epoch 53/100 [133.0s] | LR: 2.955607e-05 | Train Loss: 1.1901 | Val Loss: 0.6831 | mP=54.91% mR=59.44% mIoU=45.73% mDice=54.88% ← best IoU
+Epoch 54/100 [132.8s] | LR: 2.866048e-05 | Train Loss: 1.2016 | Val Loss: 0.6828 | mP=50.72% mR=59.18% mIoU=43.39% mDice=52.70%
+Epoch 55/100 [133.0s] | LR: 2.776057e-05 | Train Loss: 1.1595 | Val Loss: 0.6671 | mP=51.57% mR=59.13% mIoU=43.20% mDice=53.05% ← best loss
+Epoch 56/100 [132.6s] | LR: 2.685758e-05 | Train Loss: 1.1712 | Val Loss: 0.6921 | mP=53.71% mR=60.41% mIoU=45.39% mDice=55.09%
+Epoch 57/100 [133.1s] | LR: 2.595273e-05 | Train Loss: 1.1124 | Val Loss: 0.6713 | mP=48.75% mR=58.00% mIoU=41.49% mDice=51.28%
+Epoch 58/100 [132.7s] | LR: 2.504727e-05 | Train Loss: 1.2751 | Val Loss: 0.6739 | mP=49.71% mR=61.83% mIoU=43.09% mDice=52.52%
+Epoch 59/100 [132.4s] | LR: 2.414242e-05 | Train Loss: 1.1215 | Val Loss: 0.6612 | mP=50.97% mR=60.93% mIoU=43.99% mDice=53.40% ← best loss
+Epoch 60/100 [132.4s] | LR: 2.323943e-05 | Train Loss: 1.0325 | Val Loss: 0.6815 | mP=52.09% mR=60.74% mIoU=44.25% mDice=53.85%
+Epoch 61/100 [132.7s] | LR: 2.233952e-05 | Train Loss: 0.9937 | Val Loss: 0.6753 | mP=50.71% mR=58.37% mIoU=42.75% mDice=52.07%
+Epoch 62/100 [132.6s] | LR: 2.144393e-05 | Train Loss: 1.0593 | Val Loss: 0.6892 | mP=51.17% mR=58.29% mIoU=43.30% mDice=52.73%
+Epoch 63/100 [132.4s] | LR: 2.055388e-05 | Train Loss: 1.1922 | Val Loss: 0.6768 | mP=49.77% mR=58.34% mIoU=42.55% mDice=51.93%
+Epoch 64/100 [132.3s] | LR: 1.967059e-05 | Train Loss: 1.0559 | Val Loss: 0.6668 | mP=49.21% mR=60.11% mIoU=42.72% mDice=51.97%
+Epoch 65/100 [132.4s] | LR: 1.879526e-05 | Train Loss: 0.9999 | Val Loss: 0.6741 | mP=50.14% mR=59.15% mIoU=42.82% mDice=52.09%
+Epoch 66/100 [132.3s] | LR: 1.792908e-05 | Train Loss: 1.0399 | Val Loss: 0.6705 | mP=47.68% mR=60.29% mIoU=41.09% mDice=50.12%
+Epoch 67/100 [132.3s] | LR: 1.707325e-05 | Train Loss: 1.1578 | Val Loss: 0.6816 | mP=53.58% mR=58.56% mIoU=44.37% mDice=53.87%
+Epoch 68/100 [132.3s] | LR: 1.622893e-05 | Train Loss: 0.9961 | Val Loss: 0.6620 | mP=49.51% mR=59.79% mIoU=41.89% mDice=51.48%
+Epoch 69/100 [132.2s] | LR: 1.539727e-05 | Train Loss: 0.9132 | Val Loss: 0.6545 | mP=50.24% mR=59.68% mIoU=42.61% mDice=52.43% ← best loss
+Epoch 70/100 [132.4s] | LR: 1.457941e-05 | Train Loss: 1.0540 | Val Loss: 0.6370 | mP=54.88% mR=59.11% mIoU=45.59% mDice=55.26% ← best loss
+Epoch 71/100 [131.9s] | LR: 1.377647e-05 | Train Loss: 1.0464 | Val Loss: 0.6336 | mP=56.58% mR=58.97% mIoU=46.40% mDice=56.25% ← best IoU ← best loss
+Epoch 72/100 [131.7s] | LR: 1.298954e-05 | Train Loss: 1.0316 | Val Loss: 0.6220 | mP=55.94% mR=58.43% mIoU=45.92% mDice=55.56% ← best loss
+Epoch 73/100 [132.2s] | LR: 1.221969e-05 | Train Loss: 0.9689 | Val Loss: 0.6422 | mP=53.53% mR=60.21% mIoU=45.40% mDice=55.02%
+Epoch 74/100 [131.8s] | LR: 1.146799e-05 | Train Loss: 0.9858 | Val Loss: 0.6404 | mP=55.05% mR=59.46% mIoU=45.58% mDice=55.43%
+Epoch 75/100 [131.5s] | LR: 1.073545e-05 | Train Loss: 0.9386 | Val Loss: 0.6449 | mP=55.69% mR=59.28% mIoU=46.23% mDice=56.00%
+Epoch 76/100 [131.9s] | LR: 1.002308e-05 | Train Loss: 0.8217 | Val Loss: 0.6215 | mP=56.20% mR=57.60% mIoU=45.25% mDice=55.43% ← best loss
+Epoch 77/100 [131.5s] | LR: 9.331849e-06 | Train Loss: 1.0213 | Val Loss: 0.6218 | mP=57.08% mR=59.78% mIoU=47.10% mDice=56.84% ← best IoU
+Epoch 78/100 [131.4s] | LR: 8.662701e-06 | Train Loss: 0.9260 | Val Loss: 0.6142 | mP=57.25% mR=58.53% mIoU=46.74% mDice=56.46% ← best loss
+Epoch 79/100 [131.2s] | LR: 8.016551e-06 | Train Loss: 0.9306 | Val Loss: 0.6322 | mP=54.89% mR=57.65% mIoU=45.13% mDice=55.08%
+Epoch 80/100 [131.4s] | LR: 7.394282e-06 | Train Loss: 0.8022 | Val Loss: 0.6218 | mP=56.46% mR=58.35% mIoU=46.08% mDice=56.29%
+Epoch 81/100 [131.3s] | LR: 6.796742e-06 | Train Loss: 1.0310 | Val Loss: 0.6214 | mP=56.36% mR=59.06% mIoU=46.68% mDice=56.45%
+Epoch 82/100 [131.2s] | LR: 6.224749e-06 | Train Loss: 0.8943 | Val Loss: 0.6230 | mP=56.88% mR=57.94% mIoU=46.54% mDice=56.03%
+Epoch 83/100 [131.2s] | LR: 5.679084e-06 | Train Loss: 0.9025 | Val Loss: 0.6292 | mP=55.87% mR=58.60% mIoU=46.11% mDice=56.01%
+Epoch 84/100 [130.9s] | LR: 5.160491e-06 | Train Loss: 0.9899 | Val Loss: 0.6244 | mP=56.98% mR=58.43% mIoU=46.44% mDice=56.29%
+Epoch 85/100 [131.3s] | LR: 4.669680e-06 | Train Loss: 0.8142 | Val Loss: 0.6324 | mP=57.13% mR=58.25% mIoU=46.31% mDice=56.10%
+Epoch 86/100 [130.6s] | LR: 4.207321e-06 | Train Loss: 0.9297 | Val Loss: 0.6328 | mP=56.26% mR=58.22% mIoU=46.41% mDice=56.21%
+Epoch 87/100 [130.9s] | LR: 3.774045e-06 | Train Loss: 0.8087 | Val Loss: 0.6179 | mP=57.47% mR=58.53% mIoU=47.20% mDice=56.91% ← best IoU
+Epoch 88/100 [130.8s] | LR: 3.370444e-06 | Train Loss: 0.8650 | Val Loss: 0.6247 | mP=56.80% mR=59.13% mIoU=47.18% mDice=56.84%
+Epoch 89/100 [130.3s] | LR: 2.997069e-06 | Train Loss: 0.8822 | Val Loss: 0.6377 | mP=55.96% mR=58.92% mIoU=46.55% mDice=56.27%
+Epoch 90/100 [130.9s] | LR: 2.654430e-06 | Train Loss: 0.8992 | Val Loss: 0.6304 | mP=56.60% mR=58.74% mIoU=46.59% mDice=56.23%
+Epoch 91/100 [130.4s] | LR: 2.342996e-06 | Train Loss: 1.0099 | Val Loss: 0.6228 | mP=54.88% mR=58.04% mIoU=45.40% mDice=55.16%
+Epoch 92/100 [130.6s] | LR: 2.063192e-06 | Train Loss: 0.7879 | Val Loss: 0.6239 | mP=55.80% mR=58.13% mIoU=45.89% mDice=55.84%
+Epoch 93/100 [130.5s] | LR: 1.815399e-06 | Train Loss: 0.8781 | Val Loss: 0.6204 | mP=57.26% mR=58.38% mIoU=47.03% mDice=56.93%
+Epoch 94/100 [130.4s] | LR: 1.599957e-06 | Train Loss: 0.9552 | Val Loss: 0.6174 | mP=55.92% mR=58.41% mIoU=46.17% mDice=56.01%
+Epoch 95/100 [130.5s] | LR: 1.417159e-06 | Train Loss: 0.8885 | Val Loss: 0.6191 | mP=54.65% mR=58.78% mIoU=45.03% mDice=55.34%
+Epoch 96/100 [130.5s] | LR: 1.267256e-06 | Train Loss: 0.8014 | Val Loss: 0.6182 | mP=57.43% mR=58.00% mIoU=46.83% mDice=56.59%
+Epoch 97/100 [130.1s] | LR: 1.150451e-06 | Train Loss: 0.9605 | Val Loss: 0.6151 | mP=57.27% mR=58.71% mIoU=46.92% mDice=56.62%
+Epoch 98/100 [129.8s] | LR: 1.066905e-06 | Train Loss: 0.8675 | Val Loss: 0.6106 | mP=56.78% mR=58.92% mIoU=46.68% mDice=56.65% ← best loss
+Epoch 99/100 [130.1s] | LR: 1.016732e-06 | Train Loss: 0.9893 | Val Loss: 0.6208 | mP=57.21% mR=58.02% mIoU=46.48% mDice=56.06%
+Epoch 100/100 [129.9s] | LR: 1.000000e-06 | Train Loss: 0.9146 | Val Loss: 0.6161 | mP=55.84% mR=58.23% mIoU=46.33% mDice=56.09%
+
+=== Final Val Metrics ===
+  Class 1: P=87.89%  R=77.91%  IoU=70.35%  Dice=82.60%
+  Class 2: P=8.74%  R=47.10%  IoU=7.96%  Dice=14.74%
+  Class 3: P=76.50%  R=82.18%  IoU=65.61%  Dice=79.24%
+  Class 4: P=86.45%  R=84.17%  IoU=74.36%  Dice=85.30%
+  Class 5: P=30.76%  R=30.79%  IoU=18.19%  Dice=30.77%
+  Class 6: P=26.97%  R=47.37%  IoU=20.75%  Dice=34.37%
+  Mean: P=52.88%  R=61.59%  mIoU=42.87%  mDice=54.50%

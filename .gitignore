@@ -1,0 +1,7 @@
+best_iou_model.pth
+archive/
+test_results_images/
+DINO-AugSeg_Data_model/
+test_results/
+__pycache__/
+*/__pycache__/
