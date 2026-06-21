@@ -644,68 +644,10 @@ class PostAttentionSwiGLU(nn.Module):
         # Bước 4: Cộng kết quả với nhánh tắt ban đầu (Residual Connection)
         return swiglu_out + identity
 ###
-# -------------------------
-# Attention Gate (UNet attention)
-# -------------------------
-class AttentionGate(nn.Module):
-    def __init__(self, F_g, F_l, F_int):
-        super().__init__()
-        self.W_g = nn.Sequential(
-            nn.Conv2d(F_g, F_int, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.BatchNorm2d(F_int)
-        )
-        self.W_x = nn.Sequential(
-            nn.Conv2d(F_l, F_int, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.BatchNorm2d(F_int)
-        )
-        self.psi = nn.Sequential(
-            nn.Conv2d(F_int, 1, kernel_size=1, stride=1, padding=0, bias=True),
-            nn.Sigmoid()
-        )
-        self.relu = nn.ReLU(inplace=True)
-
-    def forward(self, g, x):
-        # g: gating signal (from decoder), x: skip connection (from encoder)
-        g1 = self.W_g(g)
-        x1 = self.W_x(x)
-        psi = self.relu(g1 + x1)
-        psi = self.psi(psi)
-        return x * psi
 
 # -------------------------
 # wavelet-feature augmentation +  attunet-decoder (lightweight MLP fusion)  
 # -------------------------
-class WaveletRandomMask(nn.Module):
-    def __init__(self, wave="haar", drop_rate=0.3, separate_channels=False):
-        super().__init__()
-        self.drop_rate = drop_rate
-        self.dwt = DWTForward(J=1, wave=wave)
-        self.idwt = DWTInverse(wave=wave)
-        self.separate_channels = separate_channels
-
-    def forward(self, x):
-        # Only apply in training mode
-        if not self.training or self.drop_rate <= 0:
-            return x
-        
-        Yl, Yh = self.dwt(x)
-        Yh = Yh[0] # Bx3xCxHxW
-        # Random masks
-        mask_lp = (torch.rand_like(Yl) > self.drop_rate).float()
-        Yl = Yl * mask_lp
-        if self.separate_channels:
-            # Yh: high-frequency components [B, C, 3, H/2, W/2] (for J=1).
-            # Mask each of the 3 subbands separately
-            for i in range(3):
-                mask_hp = (torch.rand_like(Yh[:, :, i]) > self.drop_rate).float()
-                Yh[:, :, i] = Yh[:, :, i] * mask_hp
-        else:
-            # Mask all high-frequency components together
-            mask_hp = (torch.rand_like(Yh) > self.drop_rate).float()
-            Yh = Yh * mask_hp
-
-        out = self.idwt((Yl, [Yh]))
-        return out
 
 ##
 import torch
@@ -758,192 +700,8 @@ class WaveletEdgePerturbation(nn.Module):
 # -------------------------
 # att-unet + high feature guided for feature fusion
 # -------------------------
-# -------------------------
-# Cross-attention bottle decoder (lightweight MLP fusion)
-# -------------------------
-class CrossAttentionBlock(nn.Module):
-    def __init__(self, dim_q, dim_kv, num_heads=4, 
-                 attn_type="global",  # "global" or "window"
-                 window_size=(7, 7),
-                 pre_norm=True,
-                 use_residual=True,
-                 attn_drop=0.1, proj_drop=0.1,
-                 use_rel_pos_bias=True):
-        super().__init__()
-        self.num_heads = num_heads
-        self.use_residual = use_residual
-        self.attn_type = attn_type
-        self.window_size = window_size
-        self.pre_norm = pre_norm
-        self.use_rel_pos_bias = use_rel_pos_bias
-
-        head_dim = dim_q // num_heads
-        self.scale = head_dim ** -0.5
-
-        self.q_proj = nn.Linear(dim_q, dim_q)
-        self.k_proj = nn.Linear(dim_kv, dim_q)
-        self.v_proj = nn.Linear(dim_kv, dim_q)
-
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.out_proj = nn.Linear(dim_q, dim_q)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-        if pre_norm:
-            self.norm_q = nn.LayerNorm(dim_q)
-            self.norm_kv = nn.LayerNorm(dim_kv)
-        else:
-            self.norm = nn.LayerNorm(dim_q)
-
-        if use_rel_pos_bias and attn_type == "window":
-            self.rel_pos_bias = RelativePositionBias(window_size, num_heads)
-        else:
-            self.rel_pos_bias = None
-
-    def forward_window(self, q, kv, H, W):
-        """ Windowed attention (Swin-style). """
-        B, Nq, Cq = q.shape
-        window_h, window_w = self.window_size
-        assert H % window_h == 0 and W % window_w == 0, "Feature map must be divisible by window size"
-
-        # reshape into windows
-        q = q.view(B, H, W, Cq)
-        kv = kv.view(B, H, W, Cq)
-
-        # partition windows
-        q_windows = q.unfold(1, window_h, window_h).unfold(2, window_w, window_w)
-        kv_windows = kv.unfold(1, window_h, window_h).unfold(2, window_w, window_w)
-
-        # reshape to (num_windows*B, Wh*Ww, C)
-        q_windows = q_windows.contiguous().view(-1, window_h * window_w, Cq)
-        kv_windows = kv_windows.contiguous().view(-1, window_h * window_w, Cq)
-
-        return q_windows, kv_windows
-
-    def forward(self, q, kv):
-        B, Cq, Hq, Wq = q.shape
-        B, Ck, Hk, Wk = kv.shape
-
-        # Flatten
-        q = q.flatten(2).transpose(1, 2)   # (B, Hq*Wq, Cq)
-        kv = kv.flatten(2).transpose(1, 2) # (B, Hk*Wk, Ck)
-
-        if self.pre_norm:
-            q = self.norm_q(q)
-            kv = self.norm_kv(kv)
-
-        Q = self.q_proj(q)
-        K = self.k_proj(kv)
-        V = self.v_proj(kv)
-
-        if self.attn_type == "window":
-            # reshape into windows
-            Q, K = self.forward_window(Q, K, Hq, Wq)
-            _, V = self.forward_window(Q, V, Hq, Wq)
-
-        # Multi-head split
-        Bq = Q.size(0)  # might be B*num_windows
-        Q = Q.reshape(Bq, -1, self.num_heads, Cq // self.num_heads).transpose(1, 2)
-        K = K.reshape(Bq, -1, self.num_heads, Cq // self.num_heads).transpose(1, 2)
-        V = V.reshape(Bq, -1, self.num_heads, Cq // self.num_heads).transpose(1, 2)
-
-        attn = (Q @ K.transpose(-2, -1)) * self.scale
-
-        # add relative positional bias if available
-        if self.rel_pos_bias is not None:
-            bias = self.rel_pos_bias()  # (nH, Wh*Ww, Wh*Ww)
-            attn = attn + bias.unsqueeze(0)
-
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        out = (attn @ V).transpose(1, 2).reshape(Bq, -1, Cq)
-        out = self.out_proj(out)
-        out = self.proj_drop(out)
-
-        if self.attn_type == "window":
-            # merge windows back
-            out = out.view(B, Hq, Wq, Cq).permute(0, 3, 1, 2).contiguous()
-        else:
-            out = out.transpose(1, 2).reshape(B, Cq, Hq, Wq)
-
-        if self.use_residual:
-            if self.pre_norm:
-                out = out + q.transpose(1, 2).reshape(B, Cq, Hq, Wq)
-            else:
-                out = out + q.transpose(1, 2).reshape(B, Cq, Hq, Wq)
-                out = self.norm(out.flatten(2).transpose(1, 2)).transpose(1, 2).reshape(B, Cq, Hq, Wq)
-
-        return out
 
 
-def kmeans_pytorch(x, K, num_iters=5):
-    # x: [N, C]
-    if x.size(0) == 0:
-        return torch.zeros(K, x.size(1), device=x.device)
-    if x.size(0) <= K:
-        indices = torch.randint(0, x.size(0), (K,), device=x.device)
-        return x[indices]
-    
-    indices = torch.randperm(x.size(0), device=x.device)[:K]
-    centers = x[indices]
-    
-    for _ in range(num_iters):
-        dists = torch.cdist(x, centers)
-        labels = torch.argmin(dists, dim=1)
-        new_centers = []
-        for i in range(K):
-            mask = labels == i
-            if mask.sum() > 0:
-                new_centers.append(x[mask].mean(dim=0))
-            else:
-                new_centers.append(centers[i])
-        centers = torch.stack(new_centers)
-    return centers
-
-class SupportGuidedAttention(nn.Module):
-    def __init__(self, query_dim, proto_dim=256):
-        super().__init__()
-        self.k_proj = nn.Linear(proto_dim, query_dim, bias=False)
-        self.v_proj = nn.Linear(proto_dim, query_dim, bias=False)
-        self.q_proj = nn.Conv2d(query_dim, query_dim, kernel_size=1, bias=False)
-        self.out_proj = nn.Conv2d(query_dim, query_dim, kernel_size=1, bias=False)
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x, prototypes):
-        if prototypes is None:
-            return x
-        B, C, H, W = x.shape
-        if prototypes.dim() == 3:
-            N, K, C_emb = prototypes.shape
-            prototypes_flat = prototypes.view(N * K, C_emb)
-        else:
-            prototypes_flat = prototypes
-            
-        # Kiểm tra xem prototype nào là hợp lệ (không phải zero vector)
-        is_valid_proto = (prototypes_flat.norm(dim=-1) > 0) # [P]
-            
-        K_feat = self.k_proj(prototypes_flat) 
-        V_feat = self.v_proj(prototypes_flat) 
-        
-        Q_feat = self.q_proj(x).view(B, C, H * W).transpose(1, 2)
-        
-        Q_feat = F.normalize(Q_feat, p=2, dim=-1)
-        # K_feat zero vectors will remain zero vectors after normalize
-        K_feat = F.normalize(K_feat, p=2, dim=-1)
-        
-        attn = torch.einsum('b m c, p c -> b m p', Q_feat, K_feat) * 10.0
-        
-        # Mask out invalid prototypes
-        attn = attn.masked_fill(~is_valid_proto.unsqueeze(0).unsqueeze(0), -float('inf'))
-        
-        attn = F.softmax(attn, dim=-1)
-        attn = torch.nan_to_num(attn, 0.0) # An toàn nếu tất cả đều là -inf
-        
-        out = torch.einsum('b m p, p c -> b m c', attn, V_feat)
-        out = out.transpose(1, 2).view(B, C, H, W)
-        
-        out = self.out_proj(out)
-        return x + self.gamma * out
 
 # === Decoder with Cross-Attention and WT-augmentation ===
 class AttentionCrossDecoder_WT_ALL(nn.Module):
@@ -957,7 +715,6 @@ class AttentionCrossDecoder_WT_ALL(nn.Module):
             self.augmentor = FeatureAugmentor(prob=0.7) 
 
         # do feature level augmentation:  wavelet dimension
-        self.wavelet_mask = WaveletRandomMask(drop_rate=drop_rate, separate_channels=separate_channels)
         self.wavelet_mask = WaveletEdgePerturbation(noise_level=drop_rate)
         # Decoder pathway
         self.up4 = nn.ConvTranspose2d(c4, c3, kernel_size=2, stride=2)
@@ -993,13 +750,8 @@ class AttentionCrossDecoder_WT_ALL(nn.Module):
             PostAttentionSwiGLU(final_channels, final_channels),
             PostAttentionSwiGLU(final_channels, final_channels)
         )
-        
-        self.sg_att4 = SupportGuidedAttention(query_dim=c3)
-        self.sg_att3 = SupportGuidedAttention(query_dim=c2)
-        self.sg_att2 = SupportGuidedAttention(query_dim=c1)
-        self.sg_att1 = SupportGuidedAttention(query_dim=final_channels)
 
-    def forward(self, feats, prototypes=None):
+    def forward(self, feats):
         f1, f2, f3, f4 = feats
 
         if self.aug_all:
@@ -1023,7 +775,6 @@ class AttentionCrossDecoder_WT_ALL(nn.Module):
         # Sau đó concat với d4_up để giữ thông tin toàn cục
         d4 = torch.cat([d4_up, f3 + f3_att], dim=1) 
         d4 = self.conv4(d4)
-        d4 = self.sg_att4(d4, prototypes)
 
         # --- Stage 3 ---
         d3_up = self.up3(d4)
@@ -1033,7 +784,6 @@ class AttentionCrossDecoder_WT_ALL(nn.Module):
         f2_att = self.att3(d3_up, f2)
         d3 = torch.cat([d3_up, f2 + f2_att], dim=1)
         d3 = self.conv3(d3)
-        d3 = self.sg_att3(d3, prototypes)
 
         # --- Stage 2 ---
         d2_up = self.up2(d3)
@@ -1043,165 +793,17 @@ class AttentionCrossDecoder_WT_ALL(nn.Module):
         f1_att = self.att2(d2_up, f1)
         d2 = torch.cat([d2_up, f1 + f1_att], dim=1)
         d2 = self.conv2(d2)
-        d2 = self.sg_att2(d2, prototypes)
 
         # --- Stage 1 ---
         d1 = self.up1(d2)
         d1 = self.conv1(d1)
-        d1 = self.sg_att1(d1, prototypes)
         
         return d1
 
 ##
-# =============================================================================
-# 2. ROBUST MULTI-SCALE FUSION VỚI ASPP (Hạng nặng, góc nhìn rộng)
-# =============================================================================
-class ASPPBlock(nn.Module):
-    """
-    Atrous Spatial Pyramid Pooling: Cung cấp Multi-scale Receptive Field cực mạnh.
-    Đổi lấy số lượng tham số lớn để lấy độ chính xác tối đa.
-    """
-    def __init__(self, in_channels, out_channels):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, 1, bias=False)
-        self.conv2 = nn.Conv2d(in_channels, out_channels, 3, padding=6, dilation=6, bias=False)
-        self.conv3 = nn.Conv2d(in_channels, out_channels, 3, padding=12, dilation=12, bias=False)
-        self.conv4 = nn.Conv2d(in_channels, out_channels, 3, padding=18, dilation=18, bias=False)
-        
-        self.global_avg_pool = nn.Sequential(
-            nn.AdaptiveAvgPool2d((1, 1)),
-            nn.Conv2d(in_channels, out_channels, 1, bias=False)
-        )
-        self.out_conv = nn.Sequential(
-            nn.Conv2d(out_channels * 5, out_channels, 1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3)
-        )
-
-    def forward(self, x):
-        x1 = self.conv1(x)
-        x2 = self.conv2(x)
-        x3 = self.conv3(x)
-        x4 = self.conv4(x)
-        x5 = F.interpolate(self.global_avg_pool(x), size=x.shape[2:], mode='bilinear', align_corners=False)
-        out = torch.cat([x1, x2, x3, x4, x5], dim=1)
-        return self.out_conv(out)
-
-class RobustMultiScaleFusion(nn.Module):
-    def __init__(self, enc_channels, embedding_dim=256, drop_rate=0.3, use_wt_aug=True):
-        super().__init__()
-        c1, c2, c3, c4 = enc_channels
-        self.use_wt_aug = use_wt_aug
-        
-        self.wavelet_enhancer = WaveletEdgePerturbation(noise_level=drop_rate)
-        
-        self.proj_c4 = PostAttentionSwiGLU(in_ch=c4, out_ch=embedding_dim)
-        self.proj_c3 = PostAttentionSwiGLU(in_ch=c3, out_ch=embedding_dim)
-        self.proj_c2 = PostAttentionSwiGLU(in_ch=c2, out_ch=embedding_dim)
-        self.proj_c1 = PostAttentionSwiGLU(in_ch=c1, out_ch=embedding_dim)
-        
-        # Áp dụng ASPP trên khối đã nối
-        self.aspp = ASPPBlock(embedding_dim * 4, embedding_dim)
-
-    def forward(self, feats):
-        f1, f2, f3, f4 = feats
-        
-        if self.use_wt_aug and self.training:
-            f1 = self.wavelet_enhancer(f1)
-            f2 = self.wavelet_enhancer(f2)
-            f3 = self.wavelet_enhancer(f3)
-            f4 = self.wavelet_enhancer(f4)
-
-        _c4 = self.proj_c4(f4)
-        _c3 = self.proj_c3(f3)
-        _c2 = self.proj_c2(f2)
-        _c1 = self.proj_c1(f1)
-
-        size = _c1.size()[2:] 
-        _c4 = F.interpolate(_c4, size=size, mode='bilinear', align_corners=False)
-        _c3 = F.interpolate(_c3, size=size, mode='bilinear', align_corners=False)
-        _c2 = F.interpolate(_c2, size=size, mode='bilinear', align_corners=False)
-
-        out = torch.cat([_c4, _c3, _c2, _c1], dim=1)
-        return self.aspp(out)
 
 
-# =============================================================================
-# 3. K-SHOT PROTOTYPE MEMORY BANK & ATTENTION HEAD
-# =============================================================================
-class MultiShotAttentionHead(nn.Module):
-    def __init__(self, in_channels: int, embedding_dim: int = 256, init_temperature: float = 15.0):
-        """
-        Head hạng nặng cho 5-shot đến 15-shot.
-        Nó đối chiếu Query với NGÂN HÀNG Prototypes, lấy đặc trưng tốt nhất, 
-        sau đó đưa qua mạng tích chập để làm mượt mặt nạ.
-        """
-        super().__init__()
-        self.proj = nn.Sequential(
-            nn.Conv2d(in_channels, embedding_dim, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(embedding_dim),
-            nn.ReLU(inplace=True)
-        )
-        self.logit_scale = nn.Parameter(torch.ones([]) * init_temperature)
-        
-        # Mạng học sâu hậu xử lý (Refinement Convolution)
-        # Kết hợp bản đồ Cosine (1 channel) và Đặc trưng gốc (embedding_dim)
-        self.refinement_conv = nn.Sequential(
-            nn.Conv2d(embedding_dim + 1, 128, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 64, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 1, kernel_size=1)
-        )
 
-    def forward(self, query_features, prototypes, targets=None, margin=0.15):
-        """
-        query_features: [B, C, H, W]
-        prototypes: [N_classes, K_shots, C] (Ma trận bộ nhớ K-Shot)
-        """
-        # 1. Chuẩn hóa không gian
-        q_emb = F.normalize(self.proj(query_features), p=2, dim=1) 
-        p_emb = F.normalize(prototypes, p=2, dim=-1)
-        
-        B, C, H, W = q_emb.shape
-        N_classes = p_emb.shape[0]
-
-        # 2. Xử lý K-Shot (K từ 5 đến 15)
-        if p_emb.dim() == 3: # Có K-shot: shape [N, K, C]
-            # Tính tương đồng Query với TẤT CẢ K-shot: Output [B, N, K, H, W]
-            cosine_sim_all = torch.einsum('b c h w, n k c -> b n k h w', q_emb, p_emb)
-            
-            # Lấy Max qua trục K-shot (Chọn mẫu giống nhất trong 15 mẫu support)
-            cosine_sim, _ = torch.max(cosine_sim_all, dim=2) 
-        else: # Fallback 1-shot: shape [N, C]
-            cosine_sim = torch.einsum('bchw,nc->bnhw', q_emb, p_emb)
-
-        # 3. Margin (Dành cho Train)
-        if self.training and targets is not None:
-            valid_mask = (targets != 255)
-            valid_targets = torch.clamp(targets, min=0, max=N_classes-1)
-            one_hot = F.one_hot(valid_targets, num_classes=N_classes).permute(0, 3, 1, 2)
-            cosine_sim = torch.where(valid_mask.unsqueeze(1), cosine_sim - (one_hot * margin), cosine_sim)
-
-        # 4. Khuếch đại Nhiệt độ
-        cosine_sim = cosine_sim * self.logit_scale
-        
-        # 5. Lọc Refinement Hạng Nặng (Duyệt qua từng Class)
-        logits_list = []
-        for n in range(N_classes):
-            sim_map = cosine_sim[:, n:n+1, :, :] # [B, 1, H, W]
-            # Nối Bản đồ tương đồng với Đặc trưng Query gốc
-            concat_feat = torch.cat([q_emb, sim_map], dim=1) # [B, C+1, H, W]
-            class_logit = self.refinement_conv(concat_feat) # [B, 1, H, W]
-            logits_list.append(class_logit)
-            
-        final_logits = torch.cat(logits_list, dim=1) # [B, N_classes, H, W]
-        
-        return final_logits
-###
 # -------------------------
 # Full ConvNeXtUNet_V2 with decoder selector
 # -------------------------
@@ -1209,68 +811,171 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-class PrototypeSimilarityHead(nn.Module):
-    def __init__(self, in_channels: int, embedding_dim: int = 256, init_temperature: float = 15.0):
+
+class DenseCrossMatchingHead(nn.Module):
+    """
+    Dense pixel-to-pixel cross-attention matching head cho Few-Shot Segmentation.
+    Class-agnostic: scorer va cross-attention DUNG CHUNG cho moi class.
+    Model hoc "cach so khop", khong "ghi nho class".
+    """
+    def __init__(self, in_channels, embedding_dim=256, num_heads=4, max_support_per_class=256):
         super().__init__()
-        self.proj = nn.Conv2d(in_channels, embedding_dim, kernel_size=1, bias=False)
-        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(init_temperature))
+        self.embedding_dim = embedding_dim
+        self.max_support_per_class = max_support_per_class
 
-    def forward(self, decoder_features, prototypes, targets=None, margin=0.15):
-        # 1. Chiếu và chuẩn hóa L2
-        pixel_embeddings = F.normalize(self.proj(decoder_features), p=2, dim=1) 
-        
-        # Xác định các prototype hợp lệ (không bị rỗng/zero vector do thiếu ảnh Support)
-        is_valid_proto = (prototypes.norm(dim=-1) > 0)
-        
-        prototypes = F.normalize(prototypes, p=2, dim=-1)
+        # Shared projection cho ca query va support -> cung embedding space
+        # Dùng GroupNorm thay BatchNorm vì episodic training batch_size=1
+        self.proj = nn.Sequential(
+            nn.Conv2d(in_channels, embedding_dim, 3, padding=1, bias=False),
+            nn.GroupNorm(32, embedding_dim),
+            nn.ReLU(inplace=True)
+        )
 
-        # 2. Tính Cosine Similarity gốc
-        if prototypes.dim() == 3: # Multi-prototype: [N, K, C]
-            cosine_sim_all = torch.einsum('b c h w, n k c -> b n k h w', pixel_embeddings, prototypes)
-            
-            # Khử đi ảo giác (False Positives) từ các zero vectors
-            valid_mask = is_valid_proto.unsqueeze(0).unsqueeze(-1).unsqueeze(-1) # [1, N, K, 1, 1]
-            cosine_sim_all = torch.where(valid_mask, cosine_sim_all, torch.full_like(cosine_sim_all, -float('inf')))
-            
-            cosine_sim, _ = torch.max(cosine_sim_all, dim=2) # [B, N, H, W]
-            
-            # Nếu 1 class hoàn toàn vắng mặt trong Support, max sẽ là -inf -> logit = -10.0 (rất âm)
-            cosine_sim = torch.nan_to_num(cosine_sim, neginf=-10.0)
-            
-        elif prototypes.dim() == 2:
-            cosine_sim = torch.einsum('b c h w, n c -> b n h w', pixel_embeddings, prototypes)
-            valid_mask = is_valid_proto.unsqueeze(0).unsqueeze(-1).unsqueeze(-1) # [1, N, 1, 1]
-            cosine_sim = torch.where(valid_mask, cosine_sim, torch.full_like(cosine_sim, -10.0))
+        # Cross-attention: query pixels attend den support pixels
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            batch_first=True,
+            dropout=0.1
+        )
+        self.norm_q = nn.LayerNorm(embedding_dim)
+        self.norm_s = nn.LayerNorm(embedding_dim)
+
+        # Gated fusion: ket hop query goc + attended features
+        self.gate_proj = nn.Sequential(
+            nn.Linear(embedding_dim * 2, embedding_dim),
+            nn.Sigmoid()
+        )
+
+        # Shared binary scorer: "pixel nay thuoc class c khong?"
+        # DUNG CHUNG cho moi class -> class-agnostic
+        self.scorer = nn.Sequential(
+            nn.Linear(embedding_dim, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 1)
+        )
+
+        # Learnable temperature
+        self.logit_scale = nn.Parameter(torch.tensor(15.0))
+
+    def _gather_class_pixels(self, support_proj, support_masks, class_id):
+        """Thu thap tat ca projected support pixels thuoc class_id."""
+        Ns, D, Hs, Ws = support_proj.shape
+        s_flat = support_proj.flatten(2).transpose(1, 2)  # [Ns, HsWs, D]
+        mask_flat = (support_masks == class_id).flatten(1)  # [Ns, HsWs]
+
+        pixels_list = []
+        for i in range(Ns):
+            if mask_flat[i].any():
+                pixels_list.append(s_flat[i][mask_flat[i]])
+
+        if not pixels_list:
+            return None
+
+        pixels = torch.cat(pixels_list, dim=0)  # [P, D]
+
+        # Subsample neu qua nhieu pixel -> tiet kiem VRAM
+        if pixels.size(0) > self.max_support_per_class:
+            if self.training:
+                idx = torch.randperm(pixels.size(0), device=pixels.device)[:self.max_support_per_class]
+            else:
+                idx = torch.linspace(0, pixels.size(0) - 1, self.max_support_per_class).long().to(pixels.device)
+            pixels = pixels[idx]
+
+        return pixels  # [P, D]
+
+    def forward(self, query_features, support_features, support_masks, targets=None):
+        """
+        Args:
+            query_features:   [B, C_in, H, W] - decoder output cua query
+            support_features: [Ns, C_in, Hs, Ws] - decoder output cua support (detached)
+            support_masks:    [Ns, Hs, Ws] - class masks tai feature resolution
+        Returns:
+            logits: [B, num_detected_classes, H, W]
+        """
+        B, _, H, W = query_features.shape
+
+        # Project ca hai vao cung embedding space (shared weights)
+        q_proj = self.proj(query_features)   # [B, D, H, W]
+        q_proj = F.normalize(q_proj, p=2, dim=1)
+        q_flat = q_proj.flatten(2).transpose(1, 2)  # [B, HW, D]
+
+        s_proj = self.proj(support_features)  # [Ns, D, Hs, Ws]
+        s_proj = F.normalize(s_proj, p=2, dim=1)
+
+        # FIX: Tìm index class lớn nhất để đảm bảo số kênh Logits khớp với Targets
+        max_s = support_masks[support_masks != 255].max().item() if (support_masks != 255).any() else 0
+        if targets is not None:
+            max_t = targets[targets != 255].max().item() if (targets != 255).any() else 0
+            max_c = max(max_s, max_t)
         else:
-            cosine_sim = torch.einsum('b c h w, b n c -> b n h w', pixel_embeddings, prototypes)
-            valid_mask = is_valid_proto.unsqueeze(-1).unsqueeze(-1) # [B, N, 1, 1]
-            cosine_sim = torch.where(valid_mask, cosine_sim, torch.full_like(cosine_sim, -10.0))
+            max_c = max_s
+            
+        num_classes = int(max_c) + 1
 
-        # =======================================================
-        # 3. ÁP DỤNG MARGIN (Chỉ chạy lúc Training)
-        # =======================================================
-        if self.training and targets is not None:
-            targets_resized = F.interpolate(
-                targets.float().unsqueeze(1), 
-                size=cosine_sim.shape[2:], 
-                mode='nearest'
-            ).squeeze(1).long() 
+        # Thu thập pixel cho tất cả các class
+        class_pixels_list = []
+        valid_classes = []
+        for c in range(num_classes):
+            pixels = self._gather_class_pixels(s_proj, support_masks, c)
+            if pixels is not None:
+                class_pixels_list.append(pixels)
+                valid_classes.append(c)
 
-            valid_mask = (targets_resized != 255)
-            
-            num_classes = prototypes.size(0) if prototypes.dim() == 3 else prototypes.size(-2)
-            valid_targets = torch.clamp(targets_resized, min=0, max=num_classes-1)
-            
-            one_hot = F.one_hot(valid_targets, num_classes=num_classes).permute(0, 3, 1, 2)
-            
-            cosine_sim_margin = cosine_sim - (one_hot * margin)
-            
-            cosine_sim = torch.where(valid_mask.unsqueeze(1), cosine_sim_margin, cosine_sim)
-            
-        scale = torch.clamp(self.logit_scale, max=4.605).exp()
-        # 4. Khuếch đại bằng Nhiệt độ
-        logits = cosine_sim * scale
-        return logits
+        if len(class_pixels_list) == 0:
+            # Không có class nào có support -> trả về toàn logit âm
+            return torch.full((B, num_classes, H, W), -10.0, device=q_proj.device)
+
+        # Batching: Tìm max P trong số các class có pixel
+        max_p_current = max(p.size(0) for p in class_pixels_list)
+        
+        num_valid = len(valid_classes)
+        D = q_proj.size(1)
+        
+        s_batched = torch.zeros((num_valid, max_p_current, D), device=q_proj.device)
+        pad_mask = torch.zeros((num_valid, max_p_current), dtype=torch.bool, device=q_proj.device)
+        
+        for i, pixels in enumerate(class_pixels_list):
+            P = pixels.size(0)
+            s_batched[i, :P] = pixels
+            if P < max_p_current:
+                pad_mask[i, P:] = True
+
+        # Expand batch dimension cho queries and supports: batch size mới là B * num_valid
+        # q_flat: [B, HW, D] -> [B, num_valid, HW, D] -> [B * num_valid, HW, D]
+        q_flat_expand = q_flat.unsqueeze(1).expand(B, num_valid, -1, -1).reshape(B * num_valid, -1, D)
+        
+        # s_batched: [num_valid, max_P, D] -> [B, num_valid, max_P, D] -> [B * num_valid, max_p_current, D]
+        s_expand = s_batched.unsqueeze(0).expand(B, -1, -1, -1).reshape(B * num_valid, max_p_current, D)
+        
+        # pad_mask: [num_valid, max_P] -> [B, num_valid, max_P] -> [B * num_valid, max_p_current]
+        pad_mask_expand = pad_mask.unsqueeze(0).expand(B, -1, -1).reshape(B * num_valid, max_p_current)
+
+        # Cross attention (batched across classes)
+        attended, _ = self.cross_attn(
+            self.norm_q(q_flat_expand),
+            self.norm_s(s_expand),
+            s_expand,
+            key_padding_mask=pad_mask_expand
+        )  # [B * num_valid, HW, D]
+
+        # Gated fusion
+        combined = torch.cat([q_flat_expand, attended], dim=-1)  # [B * num_valid, HW, 2D]
+        gate = self.gate_proj(combined)  # [B * num_valid, HW, D]
+        fused = q_flat_expand + gate * attended  # Residual + gated attention
+
+        # Score: "pixel nay thuoc class c khong?" - shared scorer
+        score = self.scorer(fused)  # [B * num_valid, HW, 1]
+        score = score.view(B, num_valid, H, W)  # [B, num_valid, H, W]
+
+        # Reconstruct full logits
+        logits = torch.full((B, num_classes, H, W), -10.0, device=q_proj.device)
+        for i, c in enumerate(valid_classes):
+            logits[:, c, :, :] = score[:, i, :, :]
+
+        scale = self.logit_scale.clamp(max=100.0)
+        return logits * scale
+
 
 class DINO_AugSeg(nn.Module):
     def __init__(self, encoder, num_classes=1, model_type="tiny", decoder_type="cross_guide_wt_unet", use_wt_aug=True, aug_feat=False,initial_random_choice=0.7):
@@ -1310,7 +1015,12 @@ class DINO_AugSeg(nn.Module):
             raise ValueError("decoder_type must be one of 'attention_unet','segformer','deeplabv3plus'")
         # self.base_prototypes = nn.Parameter(torch.randn(self.num_classes, self.embedding_dim))
         # nn.init.normal_(self.base_prototypes, std=0.02)
-        self.out_conv = PrototypeSimilarityHead(decoder_out_channels + self.enc_channels[0], embedding_dim=self.embedding_dim)
+        self.matching_head = DenseCrossMatchingHead(
+            in_channels=decoder_out_channels + self.enc_channels[0],
+            embedding_dim=self.embedding_dim,
+            num_heads=4,
+            max_support_per_class=256
+        )
     def extract_features(self, x):
         feats = []
         out = x
@@ -1319,48 +1029,39 @@ class DINO_AugSeg(nn.Module):
             out = self.encoder.stages[i](out)
             feats.append(out)
         return feats
-    def compute_prototype(self, support_image, support_mask, K=5):
-        feats = self.extract_features(support_image) 
-        # Support decoding without condition
-        dec_out = self.decoder(feats, prototypes=None) 
-        
-        # Multi-scale fusion for head
+    def extract_support_features(self, support_images, support_masks):
+        """
+        Trich xuat raw features tu support set — KHONG nen, KHONG K-means.
+        Differentiable thong qua matching head projection.
+
+        Args:
+            support_images: [Ns, 3, H, W]
+            support_masks:  [Ns, H, W]
+        Returns:
+            support_features: [Ns, C_in, H', W'] — raw decoded features
+            masks_resized:    [Ns, H', W'] — masks tai feature resolution
+        """
+        feats = self.extract_features(support_images)
+        dec_out = self.decoder(feats)
+
+        # Multi-scale fusion (giu nguyen logic encoder-decoder)
         f1 = feats[0]
         if f1.shape[-2:] != dec_out.shape[-2:]:
             f1_resized = F.interpolate(f1, size=dec_out.shape[-2:], mode='bilinear', align_corners=False)
         else:
             f1_resized = f1
-        head_input = torch.cat([dec_out, f1_resized], dim=1)
-        proj_out = self.out_conv.proj(head_input) 
-        
-        if support_mask.dim() == 3:
-            support_mask = support_mask.unsqueeze(1)
-            
-        mask_resized = F.interpolate(support_mask.float(), size=proj_out.shape[-2:], mode='nearest')
-        
-        B, C, H, W = proj_out.shape 
-        proj_flat = proj_out.view(B, C, -1).transpose(1, 2) # [B, H*W, C]        
-        mask_flat = mask_resized.view(B, 1, -1).transpose(1, 2) # [B, H*W, 1]
-        
-        prototypes_list = []
-        
-        # Quét từ 0 đến num_classes - 1
-        for class_idx in range(self.num_classes):
-            c_mask = (mask_flat == class_idx).squeeze(-1) # [B, H*W]
-            # Since batch might be > 1 for support, we gather across all batches
-            class_pixels = proj_flat[c_mask] # [N_pixels, C]
-            
-            if class_pixels.size(0) > 0:
-                c_proto = kmeans_pytorch(class_pixels, K=K, num_iters=5) # [K, C]
-            else:
-                c_proto = torch.zeros(K, C, device=proj_flat.device)
-                
-            prototypes_list.append(c_proto)
-            
-        dynamic_prototypes = torch.stack(prototypes_list, dim=0) # [num_classes, K, 256]
-        dynamic_prototypes = F.normalize(dynamic_prototypes, dim=-1)
-        
-        return dynamic_prototypes
+        support_features = torch.cat([dec_out, f1_resized], dim=1)  # [Ns, C_in, H', W']
+
+        # Resize masks ve feature resolution
+        if support_masks.dim() == 2:
+            support_masks = support_masks.unsqueeze(0)
+        masks_resized = F.interpolate(
+            support_masks.float().unsqueeze(1),
+            size=dec_out.shape[-2:],
+            mode='nearest'
+        ).squeeze(1).long()  # [Ns, H', W']
+
+        return support_features, masks_resized
     def update_random_choice(self, new_prob):
         # 1. Cập nhật thông số quản lý ở lớp vỏ ngoài cùng
         self.random_choice = new_prob
@@ -1368,30 +1069,37 @@ class DINO_AugSeg(nn.Module):
         # 2. Bắn thẳng thông số sửa vào AttentionCrossDecoder_WT_ALL
         self.decoder.random_choice = new_prob
         
-    def forward(self, x, prototypes, targets=None):
-        # ---- encoder forward (same logic as your original) ----
+    def forward(self, x, support_features, support_masks, targets=None):
+        """
+        Args:
+            x:                [B, 3, H, W] — query images
+            support_features: [Ns, C_in, H', W'] — tu extract_support_features
+            support_masks:    [Ns, H', W'] — tu extract_support_features
+            targets:          [B, H, W] — query masks (chi dung luc train)
+        """
+        # 1. Encoder: get features from dinov3
         feats = []
         out = x
-        # 1. Encoder: get features from dinov3
         for i, down in enumerate(self.encoder.downsample_layers):
             out = down(out)
             out = self.encoder.stages[i](out)
             feats.append(out)
-        # feats: [f1, f2, f3, f4] (shallow -> deep)
         f1, f2, f3, f4 = feats
 
-        # 2. Decoder: do CG-Fuse (training and testing) and WT-Aug(only in training)
-        dec_out = self.decoder([f1,f2,f3,f4], prototypes=prototypes)  
-        
-        # 3. get the final segmentation results
+        # 2. Decoder
+        dec_out = self.decoder([f1, f2, f3, f4])
+
+        # 3. Concat query features
         if f1.shape[-2:] != dec_out.shape[-2:]:
             f1_resized = F.interpolate(f1, size=dec_out.shape[-2:], mode='bilinear', align_corners=False)
         else:
             f1_resized = f1
         head_input = torch.cat([dec_out, f1_resized], dim=1)
-        
-        logits = self.out_conv(head_input, prototypes, targets=targets)
-        # upsample logits to input resolution
+
+        # 4. Dense cross-matching: query vs support (pixel-to-pixel)
+        logits = self.matching_head(head_input, support_features, support_masks, targets=targets)
+
+        # 5. Upsample ve input resolution
         logits = F.interpolate(logits, size=x.shape[2:], mode='bilinear', align_corners=False)
         return logits
 
@@ -1425,8 +1133,10 @@ if __name__ == '__main__':
         model = model.to(device)
         # model.eval()
         # test forward
-        batch_img = torch.randn((1, 3, img_size, img_size))
-        batch_img = batch_img.to(device)
+        batch_img = torch.randn((1, 3, img_size, img_size)).to(device)
+        batch_support = torch.randn((1, 3, img_size, img_size)).to(device)
+        batch_mask = torch.randint(0, 2, (1, 1, img_size, img_size)).to(device)
         with torch.no_grad():
-            pred_mask = model(batch_img)   # [1, 1, 768, 768]
-        print(pred_mask.shape)
+            s_feat, s_mask_r = model.extract_support_features(batch_support, batch_mask)
+            pred_mask = model(batch_img, support_features=s_feat, support_masks=s_mask_r)
+        print("Output shape:", pred_mask.shape)

@@ -299,19 +299,24 @@ class EpisodicDataset(Dataset):
     Class bọc (Wrapper) biến CustomDataset gốc thành tập dữ liệu Episodic.
     Đã được nâng cấp lên Class-Aware Sampling để trị các class cực hiếm.
     """
-    def __init__(self, base_dataset: CustomDataset, num_support=15, num_query=1, episodes_per_epoch=500, deterministic=False):
+    def __init__(self, base_dataset: CustomDataset, num_support=15, num_query=1, episodes_per_epoch=500, deterministic=False, n_way=3, valid_classes=None):
         self.base = base_dataset
         self.num_support = num_support
         self.num_query = num_query
         self.episodes_per_epoch = episodes_per_epoch
         self.deterministic = deterministic  # True cho Val/Test để kết quả lặp lại được
+        self.n_way = n_way  # Số foreground class mỗi episode (N-way few-shot)
         
         print(f"[{self.base.split.upper()}] Đang quét toàn bộ Mask để xây dựng Class-Aware Sampler (Khoảng 5-15 giây)...")
         from PIL import Image
         import numpy as np
         
-        # Bỏ qua background (0) và vùng ignore (255)
-        self.class_to_indices = {c: [] for c in range(1, self.base.num_classes)}
+        # Nếu không truyền valid_classes, lấy toàn bộ class (trừ background 0)
+        if valid_classes is None:
+            valid_classes = list(range(1, self.base.num_classes))
+            
+        # Chỉ tạo bucket cho các class hợp lệ trong đợt chia này (Cross-Validation)
+        self.class_to_indices = {c: [] for c in valid_classes}
         
         for i, (stem, img_path) in enumerate(self.base.samples):
             mask_stem = stem + self.base.mask_suffix
@@ -321,7 +326,7 @@ class EpisodicDataset(Dataset):
                 mask_np = np.array(mask)
                 unique_classes = np.unique(mask_np)
                 for c in unique_classes:
-                    if 0 < c < self.base.num_classes:
+                    if c in valid_classes:
                         self.class_to_indices[c].append(i)
             except Exception as e:
                 pass # Bỏ qua nếu lỗi load mask
@@ -347,8 +352,10 @@ class EpisodicDataset(Dataset):
         # 1. Bốc thăm có chủ đích (Ép các class phải xuất hiện)
         chosen_classes = []
         if len(self.available_classes) > 0:
-            k_classes = min(self.num_support, len(self.available_classes))
-            chosen_classes = rng.sample(self.available_classes, k=k_classes)
+            # N-way: chỉ sample n_way class mỗi episode thay vì tất cả
+            # → buộc model học matching thay vì ghi nhớ
+            n_way = min(self.n_way, len(self.available_classes))
+            chosen_classes = rng.sample(self.available_classes, k=n_way)
             
             for c in chosen_classes:
                 chosen_idx = rng.choice(self.class_to_indices[c])
@@ -415,7 +422,23 @@ class EpisodicDataset(Dataset):
             q_imgs.append(img)
             q_masks.append(mask)
 
-        return torch.stack(s_imgs), torch.stack(s_masks), torch.stack(q_imgs), torch.stack(q_masks)
+        s_masks_t = torch.stack(s_masks)
+        q_masks_t = torch.stack(q_masks)
+
+        # 5. N-way Label Remapping
+        # Remap: background(0)→0, chosen_class[0]→1, chosen_class[1]→2, ...
+        # Tất cả class khác → 255 (ignore) để KHÔNG dập tắt (suppress) novel class
+        label_map = {0: 0}
+        for i, c in enumerate(chosen_classes):
+            label_map[c] = i + 1
+
+        s_masks_remapped = torch.full_like(s_masks_t, 255)
+        q_masks_remapped = torch.full_like(q_masks_t, 255)
+        for old_label, new_label in label_map.items():
+            s_masks_remapped[s_masks_t == old_label] = new_label
+            q_masks_remapped[q_masks_t == old_label] = new_label
+
+        return torch.stack(s_imgs), s_masks_remapped, torch.stack(q_imgs), q_masks_remapped
 # ---------------------------------------------------------------------------
 # Test nhanh
 # ---------------------------------------------------------------------------

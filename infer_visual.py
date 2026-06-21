@@ -105,9 +105,9 @@ def main():
     model.eval()
 
     # 4. Trích xuất Prototype từ Support Set
-    print("\n[3] Đang trích xuất Cụm tri thức (Prototypes) từ Support Set...")
+    print("\n[3] Đang trích xuất đặc trưng từ Support Set (Dense Matching)...")
     with torch.no_grad():
-        final_prototypes = model.compute_prototype(s_imgs, s_masks)
+        support_features, support_masks_r = model.extract_support_features(s_imgs, s_masks)
     
     # 5. Xử lý ảnh Thực tế (Query Image)
     print(f"\n[4] Đang phóng sóng Sonar (Inference) vào ảnh: {args.q_img}")
@@ -117,7 +117,7 @@ def main():
     q_tensor = transform_img(q_pil_origin).unsqueeze(0).to(device) # Cấp chiều Batch = 1 -> [1, C, H, W]
 
     with torch.no_grad():
-        preds = model(q_tensor, prototypes=final_prototypes)
+        preds = model(q_tensor, support_features=support_features, support_masks=support_masks_r)
         pred_cls = torch.softmax(preds, dim=1).argmax(dim=1).squeeze(0) # Trả về tọa độ [H, W]
 
     # 6. Tô màu và Kết xuất

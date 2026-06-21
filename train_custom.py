@@ -218,10 +218,9 @@ def lovasz_grad(gt_sorted):
 
 class LovaszSoftmaxLoss(nn.Module):
     """Lovasz-Softmax Loss tối ưu trực tiếp cho chỉ số mIoU."""
-    def __init__(self, num_classes: int = 7, ignore_index: int = 255):
+    def __init__(self, ignore_index: int = 255):
         super().__init__()
         self.ignore_index = ignore_index
-        self.num_classes = num_classes
 
     def forward(self, preds, targets):
         # preds: [B, C, H, W] logits | targets: [B, H, W] long
@@ -243,14 +242,14 @@ class LovaszSoftmaxLoss(nn.Module):
         # DUYỆT QUA TẤT CẢ CLASS (không chỉ unique(targets))
         # → Nếu model dự đoán ra class C mà targets không có C,
         #   errors vẫn lớn → Loss vẫn phạt → giảm False Positives.
-        for c in range(self.num_classes):
+        for c in range(preds.size(1)):
             fg = (targets == c).float() # Mảng nhị phân cho class hiện tại
             errors = (fg - preds[:, c]).abs()
             errors_sorted, perm = torch.sort(errors, 0, descending=True)
             fg_sorted = fg[perm]
             loss += torch.dot(errors_sorted, lovasz_grad(fg_sorted))
             
-        return loss / self.num_classes
+        return loss / preds.size(1)
 
 # ---------------------------------------------------------------------------
 # OHEM Cross Entropy Loss
@@ -312,14 +311,13 @@ class CombinedHardLoss(nn.Module):
     Kết hợp OHEM Cross-Entropy và Lovasz-Softmax.
     Đây là setup "hạng nặng" để trị mất cân bằng class và tăng mIoU.
     """
-    def __init__(self, num_classes: int, ignore_index: int = 255, alpha: float = 0.5, class_weights=None, keep_ratio: float = 0.8):
+    def __init__(self, ignore_index: int = 255, alpha: float = 0.5, class_weights=None, keep_ratio: float = 0.8):
         super().__init__()
-        self.num_classes = num_classes
         self.alpha = alpha
         
         # Khởi tạo 2 loss thành phần
         self.ohem_ce = OHEMCrossEntropyLoss(ignore_index=ignore_index, keep_ratio=keep_ratio, weight=class_weights)
-        self.lovasz = LovaszSoftmaxLoss(num_classes=num_classes, ignore_index=ignore_index)
+        self.lovasz = LovaszSoftmaxLoss(ignore_index=ignore_index)
         self.focus = FocalLoss(ignore_index=ignore_index, gamma=2.0)
 
     def forward(self, preds, targets):
@@ -333,38 +331,7 @@ class CombinedHardLoss(nn.Module):
 # ---------------------------------------------------------------------------
 # Training loop
 # ---------------------------------------------------------------------------
-# def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None):
-#     model.train()
-#     total_loss = 0.0
 
-#     for imgs, masks in loader:
-#         imgs  = imgs.to(device)
-#         masks = masks.to(device)
-#         optimizer.zero_grad()
-#         dynamic_prototypes = model.compute_prototype(imgs, masks)
-#         # print("dynamic_prototypes", dynamic_prototypes.shape)
-#         if scaler is not None:
-#             from torch.cuda.amp import autocast
-#             with autocast():
-#                 preds = model(imgs, prototypes=dynamic_prototypes, targets=masks)
-#                 # print("Các giá trị có trong Mask:", torch.unique(masks))
-                
-#                 loss  = criterion(preds, masks)
-#             scaler.scale(loss).backward()
-#             scaler.unscale_(optimizer)
-#             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-#             scaler.step(optimizer)
-#             scaler.update()
-#         else:
-#             preds = model(imgs)
-#             loss  = criterion(preds, masks)
-#             loss.backward()
-#             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-#             optimizer.step()
-
-#         total_loss += loss.item() * imgs.size(0)
-
-#     return total_loss / len(loader.dataset)
 
 # ---------------------------------------------------------------------------
 # Training loop (K-Shot Episodic + Gradient Accumulation cho GPU mạnh)
@@ -390,19 +357,23 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None,
         q_imgs, q_masks = q_imgs.squeeze(0), q_masks.squeeze(0)
 
         # ==========================================
-        # 1. RÚT PROTOTYPE TỪ SUPPORT SET (No Grad)
+        # 1. TRÍCH XUẤT ĐẶC TRƯNG TỪ SUPPORT SET (No Grad)
         # ==========================================
-        protos_list = []
+        s_feat_list = []
+        s_mask_list = []
 
+        model.eval()  # Tắt augmentation cho support
         with torch.no_grad():
             for i in range(0, s_imgs.size(0), split_size):
                 mini_s = s_imgs[i : i+split_size].to(device)
                 mini_m = s_masks[i : i+split_size].to(device)
-                mini_p = model.compute_prototype(mini_s, mini_m)
-                protos_list.append(mini_p)
+                mini_feat, mini_mask_r = model.extract_support_features(mini_s, mini_m)
+                s_feat_list.append(mini_feat)
+                s_mask_list.append(mini_mask_r)
+        model.train() # Bật lại augmentation cho query
 
-        final_prototypes = torch.cat(protos_list, dim=1)
-        final_prototypes = F.normalize(final_prototypes, p=2, dim=-1)
+        support_features = torch.cat(s_feat_list, dim=0)
+        support_masks_r = torch.cat(s_mask_list, dim=0)
 
         # ==========================================
         # 2. HỌC TỪ QUERY SET (With Grad)
@@ -414,11 +385,11 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None,
         if scaler is not None:
             from torch.cuda.amp import autocast
             with autocast():
-                preds = model(q_imgs, prototypes=final_prototypes, targets=q_masks)
+                preds = model(q_imgs, support_features=support_features, support_masks=support_masks_r, targets=q_masks)
                 loss  = criterion(preds, q_masks) / grad_accum_steps
             scaler.scale(loss).backward()
         else:
-            preds = model(q_imgs, prototypes=final_prototypes, targets=q_masks)
+            preds = model(q_imgs, support_features=support_features, support_masks=support_masks_r, targets=q_masks)
             loss  = criterion(preds, q_masks) / grad_accum_steps
             loss.backward()
 
@@ -448,19 +419,21 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None,
 def validate(model, loader, criterion, device):
     model.eval()
     total_loss = 0.0
+    total_samples = 0
     pbar = tqdm(loader, desc="Validation", leave=False)
     for s_imgs, s_masks, q_imgs, q_masks in pbar:
         s_imgs, s_masks = s_imgs.squeeze(0).to(device), s_masks.squeeze(0).to(device)
         q_imgs, q_masks = q_imgs.squeeze(0).to(device), q_masks.squeeze(0).to(device)
         
         # Vì là Validation, có thể cho tất cả support vào chung nếu đủ RAM, hoặc chia split như train
-        final_prototypes = model.compute_prototype(s_imgs, s_masks)
+        support_features, support_masks_r = model.extract_support_features(s_imgs, s_masks)
         
-        preds = model(q_imgs, prototypes=final_prototypes, targets=q_masks)
+        preds = model(q_imgs, support_features=support_features, support_masks=support_masks_r, targets=q_masks)
         loss  = criterion(preds, q_masks)
         total_loss += loss.item() * q_imgs.size(0)
+        total_samples += q_imgs.size(0)
         
-    return total_loss / (len(loader) * q_imgs.size(0))
+    return total_loss / max(total_samples, 1)
 
 @torch.no_grad()
 def validate_metrics(model, loader, device, num_classes: int = 7,
@@ -488,23 +461,25 @@ def validate_metrics(model, loader, device, num_classes: int = 7,
         # =======================================================
         # 2. TÍNH GLOBAL PROTOTYPES TỪ 15 ẢNH SUPPORT (Chống OOM)
         # =======================================================
-        protos_list = []
+        s_feat_list = []
+        s_mask_list = []
         split_size = 3 # Chunking an toàn VRAM
         
         for i in range(0, s_imgs.size(0), split_size):
             mini_s = s_imgs[i : i+split_size]
             mini_m = s_masks[i : i+split_size]
             
-            mini_p = model.compute_prototype(mini_s, mini_m)
-            protos_list.append(mini_p)
+            mini_f, mini_m_r = model.extract_support_features(mini_s, mini_m)
+            s_feat_list.append(mini_f)
+            s_mask_list.append(mini_m_r)
 
-        final_prototypes = torch.cat(protos_list, dim=1)
-        final_prototypes = F.normalize(final_prototypes, p=2, dim=-1)
+        support_features = torch.cat(s_feat_list, dim=0)
+        support_masks_r = torch.cat(s_mask_list, dim=0)
 
         # =======================================================
         # 3. DỰ ĐOÁN VÀ ĐÁNH GIÁ TRÊN ẢNH QUERY
         # =======================================================
-        preds = model(q_imgs, prototypes=final_prototypes)
+        preds = model(q_imgs, support_features=support_features, support_masks=support_masks_r)
 
         if is_binary:
             pred_cls = torch.softmax(preds, dim=1).argmax(dim=1)
@@ -553,129 +528,7 @@ def validate_metrics(model, loader, device, num_classes: int = 7,
 
 
 
-# @torch.no_grad()
-# def validate(model, loader, criterion, device):
-#     model.eval()
-#     total_loss = 0.0
-#     for imgs, masks in loader:
-#         imgs  = imgs.to(device)
-#         masks = masks.to(device)
-        
-#         # 1. Trích xuất Prototype động từ batch Validation
-#         dynamic_prototypes = model.compute_prototype(imgs, masks)
-        
-#         # 2. Bơm vào mô hình
-#         preds = model(imgs, prototypes=dynamic_prototypes, targets=masks)
-        
-#         loss  = criterion(preds, masks)
-#         total_loss += loss.item() * imgs.size(0)
-        
-#     return total_loss / len(loader.dataset)
 
-
-# @torch.no_grad()
-# def validate_metrics(model, loader, device, num_classes: int = 7,
-#                      ignore_background: bool = True, dilation_ratio: float = 0.02):
-#     model.eval()
-#     is_binary = (num_classes == 2)
-#     class_range = list(range(1, num_classes)) if ignore_background else list(range(num_classes))
-#     n_cls = len(class_range)
-
-#     tp_arr   = np.zeros(n_cls, dtype=np.float64)
-#     fp_arr   = np.zeros(n_cls, dtype=np.float64)
-#     fn_arr   = np.zeros(n_cls, dtype=np.float64)
-#     dice_num = np.zeros(n_cls, dtype=np.float64)
-#     dice_den = np.zeros(n_cls, dtype=np.float64)
-    
-#     biou_inter = np.zeros(n_cls, dtype=np.float64)
-#     biou_union = np.zeros(n_cls, dtype=np.float64)
-
-#     kernel = None 
-
-#     for imgs, masks in loader:
-#         imgs  = imgs.to(device)
-#         # BẮT BUỘC ĐẨY MASK LÊN GPU Ở ĐÂY ĐỂ TÍNH PROTOTYPE
-#         masks = masks.to(device) 
-
-#         # 1. Trích xuất Prototype
-#         dynamic_prototypes = model.compute_prototype(imgs, masks)
-
-#         # 2. Suy luận (Không cần truyền targets nếu chỉ lấy output preds)
-#         preds = model(imgs, prototypes=dynamic_prototypes)
-
-#         if is_binary:
-#             pred_cls = torch.softmax(preds, dim=1).argmax(dim=1)
-#         else:
-#             pred_cls = torch.softmax(preds, dim=1).argmax(dim=1)
-
-#         pred_np  = pred_cls.cpu().numpy().astype(np.uint8)
-#         mask_np  = masks.cpu().numpy().astype(np.uint8)
-
-#         for b in range(pred_np.shape[0]):
-#             p = pred_np[b]
-#             t = mask_np[b]
-            
-#             if kernel is None:
-#                 img_diagonal = np.sqrt(p.shape[0]**2 + p.shape[1]**2)
-#                 dilation_size = max(1, int(round(dilation_ratio * img_diagonal)))
-#                 kernel = np.ones((dilation_size, dilation_size), np.uint8)
-
-#             for i, c in enumerate(class_range):
-#                 pred_c   = (p == c).astype(np.uint8)
-#                 target_c = (t == c).astype(np.uint8)
-                
-#                 # --- Metrics gốc (mIoU, P, R) ---
-#                 tp = (pred_c & target_c).sum()
-#                 fp = (pred_c & ~target_c).sum()
-#                 fn = (~pred_c & target_c).sum()
-#                 tp_arr[i]  += tp
-#                 fp_arr[i]  += fp
-#                 fn_arr[i]  += fn
-#                 dice_num[i] += 2 * tp
-#                 dice_den[i] += pred_c.sum() + target_c.sum()
-                
-#                 # --- Boundary IoU ---
-#                 if target_c.sum() == 0 and pred_c.sum() == 0:
-#                     biou_inter[i] += 1.0 
-#                     biou_union[i] += 1.0
-#                     continue
-#                 if target_c.sum() == 0 or pred_c.sum() == 0:
-#                     biou_union[i] += 1.0 
-#                     continue
-
-#                 gt_dilate = cv2.dilate(target_c, kernel, iterations=1)
-#                 gt_erode  = cv2.erode(target_c, kernel, iterations=1)
-#                 bound_gt  = gt_dilate - gt_erode
-
-#                 pred_dilate = cv2.dilate(pred_c, kernel, iterations=1)
-#                 pred_erode  = cv2.erode(pred_c, kernel, iterations=1)
-#                 bound_pred  = pred_dilate - pred_erode
-
-#                 inter_bound = ((bound_gt > 0) & (bound_pred > 0) & (pred_c == target_c)).sum()
-#                 union_bound = ((bound_gt > 0) | (bound_pred > 0)).sum()
-
-#                 biou_inter[i] += inter_bound
-#                 biou_union[i] += union_bound
-
-#     smooth = 1e-8
-#     precision_list = (tp_arr / (tp_arr + fp_arr + smooth)).tolist()
-#     recall_list    = (tp_arr / (tp_arr + fn_arr + smooth)).tolist()
-#     iou_list       = (tp_arr / (tp_arr + fp_arr + fn_arr + smooth)).tolist()
-#     dice_list      = ((dice_num + smooth) / (dice_den + smooth)).tolist()
-#     biou_list      = (biou_inter / (biou_union + smooth)).tolist()
-
-#     return {
-#         "precision" : precision_list,
-#         "recall"    : recall_list,
-#         "iou"       : iou_list,
-#         "dice"      : dice_list,
-#         "biou"      : biou_list,
-#         "mean_precision" : float(np.mean(precision_list)),
-#         "mean_recall"    : float(np.mean(recall_list)),
-#         "mean_iou"       : float(np.mean(iou_list)),
-#         "mean_dice"      : float(np.mean(dice_list)),
-#         "mean_biou"      : float(np.mean(biou_list)),
-#     }
 
 
 
@@ -707,6 +560,12 @@ def main():
     # Dataset
     parser.add_argument("--num_classes", type=int, default=7,
                         help="Số lớp phân đoạn (bao gồm background, ví dụ 2 cho binary)")
+    parser.add_argument("--n_way",       type=int, default=3,
+                        help="Số foreground class sample mỗi episode cho N-way few-shot")
+    parser.add_argument("--train_classes", type=int, nargs="+", default=None,
+                        help="Danh sách ID các class dùng để Train (ví dụ: 1 2 3 4 5)")
+    parser.add_argument("--val_classes", type=int, nargs="+", default=None,
+                        help="Danh sách ID các class dùng để Validation (ví dụ: 6 7)")
     parser.add_argument("--img_size",    type=int, default=512,
                         help="Kích thước ảnh (vuông)")
     parser.add_argument("--train_num",   default="all",
@@ -774,7 +633,7 @@ def main():
         images_dir=args.images_dir, labels_dir=args.labels_dir,
     )
     train_dataset = EpisodicDataset(base_train_dataset, num_support=args.num_support,
-                                    num_query=args.num_query, episodes_per_epoch=args.episodes_per_epoch)
+                                    num_query=args.num_query, episodes_per_epoch=args.episodes_per_epoch, n_way=args.n_way, valid_classes=args.train_classes)
     train_loader = DataLoader(
         train_dataset, batch_size=1,
         shuffle=True, num_workers=args.num_workers, pin_memory=True,
@@ -787,7 +646,7 @@ def main():
     print(f"   Split size      : {args.split_size}")
     print(f"   Episodes/epoch  : {args.episodes_per_epoch}\n")
 
-    # Val loader (tùy chọn) — kiểm tra sự tồn tại của thư mục Images/val/
+    # Val loader (tùy chọn)
     val_loader = None
     val_img_dir = os.path.join(args.data_root, args.images_dir, "val")
     if os.path.isdir(val_img_dir) and any(
@@ -800,8 +659,13 @@ def main():
             img_size=args.img_size, mask_suffix=args.mask_suffix,
             images_dir=args.images_dir, labels_dir=args.labels_dir,
         )
-        val_dataset = EpisodicDataset(base_val_dataset, num_support=args.num_support,
-                                      num_query=args.num_query, episodes_per_epoch=100, deterministic=True)
+        if args.val_classes is not None:
+            print(f"✅ Tạo Validation Loader dùng class {args.val_classes} trên khối dữ liệu Val.")
+            val_dataset = EpisodicDataset(base_val_dataset, num_support=args.num_support,
+                                          num_query=args.num_query, episodes_per_epoch=100, deterministic=True, n_way=args.n_way, valid_classes=args.val_classes)
+        else:
+            val_dataset = EpisodicDataset(base_val_dataset, num_support=args.num_support,
+                                          num_query=args.num_query, episodes_per_epoch=100, deterministic=True, n_way=args.n_way)
         val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=args.num_workers, pin_memory=True)
 
     # ---- Backbone: load từ file .pth ----
@@ -830,7 +694,7 @@ def main():
     scheduler_warmup = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=warmup_epochs)
     scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs-warmup_epochs, eta_min=1e-6)
     scheduler = optim.lr_scheduler.SequentialLR(optimizer, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[warmup_epochs])
-    criterion = CombinedHardLoss(num_classes=args.num_classes, alpha=args.alpha,ignore_index=255,class_weights=None,keep_ratio=0.8)
+    criterion = CombinedHardLoss(alpha=args.alpha,ignore_index=255,class_weights=None,keep_ratio=0.8)
 
     scaler = None
     if args.amp and torch.cuda.is_available():
@@ -872,10 +736,11 @@ def main():
             log_line += f" | Val Loss: {val_loss:.4f}"
 
             # Tính P / R / IoU / Dice định kỳ
+            # Sau N-way remap, chỉ có classes 0..n_way → num_classes = n_way + 1
             if epoch % METRICS_EVERY == 0 or epoch == args.epochs:
                 m = validate_metrics(
                     model, val_loader, device,
-                    num_classes=args.num_classes,
+                    num_classes=args.n_way + 1,
                     ignore_background=True,
                 )
                 mP  = m["mean_precision"] * 100
@@ -946,10 +811,10 @@ def main():
         print("="*60)
         m = validate_metrics(
             model, test_loader, device,
-            num_classes=args.num_classes,
+            num_classes=args.n_way + 1,
             ignore_background=True,
         )
-        class_range = range(1, args.num_classes)
+        class_range = range(1, args.n_way + 1)
         for i, c in enumerate(class_range):
             print(
                 f"  Class {c}: "
