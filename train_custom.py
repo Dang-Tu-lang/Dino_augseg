@@ -163,16 +163,26 @@ class DiceLoss(nn.Module):
 
 
 class MultiClassDiceLoss(nn.Module):
-    """Dice Loss cho multi-class segmentation."""
-    def __init__(self, num_classes: int, smooth: float = 1e-5):
+    """Dice Loss cho multi-class segmentation (Dynamic)."""
+    def __init__(self, smooth: float = 1e-5):
         super().__init__()
-        self.num_classes = num_classes
         self.smooth = smooth
 
     def forward(self, preds, targets):
         # preds: [B,C,H,W] logits | targets: [B,H,W] long
         preds = torch.softmax(preds, dim=1)
-        targets_oh = F.one_hot(targets, self.num_classes).permute(0,3,1,2).float()
+        
+        valid_mask = (targets != 255)
+        targets_safe = targets.clone()
+        targets_safe[~valid_mask] = 0
+        
+        dynamic_num_classes = preds.shape[1]
+        targets_oh = F.one_hot(targets_safe, dynamic_num_classes).permute(0,3,1,2).float()
+        
+        valid_mask = valid_mask.unsqueeze(1).float()
+        preds = preds * valid_mask
+        targets_oh = targets_oh * valid_mask
+        
         dims = (0, 2, 3)
         inter = torch.sum(preds * targets_oh, dims)
         card  = torch.sum(preds + targets_oh, dims)
@@ -181,28 +191,16 @@ class MultiClassDiceLoss(nn.Module):
 
 
 class CombinedLoss(nn.Module):
-    """CrossEntropy + Dice Loss."""
-    def __init__(self, num_classes: int, alpha: float = 0.5):
+    """CrossEntropy + Dice Loss (Dynamic)."""
+    def __init__(self, alpha: float = 0.5):
         super().__init__()
-        self.num_classes = num_classes
         self.alpha = alpha
-        self.is_binary = (num_classes == 2)
-        if self.is_binary:
-            self.ce   = nn.BCEWithLogitsLoss()
-            self.dice = DiceLoss()
-        else:
-            self.ce   = nn.CrossEntropyLoss(ignore_index=255)
-            self.dice = MultiClassDiceLoss(num_classes)
+        self.ce = nn.CrossEntropyLoss(ignore_index=255)
+        self.dice = MultiClassDiceLoss()
 
     def forward(self, preds, targets):
-        if self.is_binary:
-            # preds: [B,2,H,W] → dùng channel 1 như binary logit
-            logit = preds[:, 1:2]   # [B,1,H,W]
-            ce_loss   = self.ce(logit.squeeze(1), targets.float())
-            dice_loss = self.dice(logit, targets)
-        else:
-            ce_loss   = self.ce(preds, targets)
-            dice_loss = self.dice(preds, targets)
+        ce_loss   = self.ce(preds, targets)
+        dice_loss = self.dice(preds, targets)
         return self.alpha * ce_loss + (1.0 - self.alpha) * dice_loss
 
 def lovasz_grad(gt_sorted):
@@ -372,7 +370,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, scaler=None,
                 s_mask_list.append(mini_mask_r)
         model.train() # Bật lại augmentation cho query
 
-        support_features = torch.cat(s_feat_list, dim=0)
+        support_features = [torch.cat([s[i] for s in s_feat_list], dim=0) for i in range(4)]
         support_masks_r = torch.cat(s_mask_list, dim=0)
 
         # ==========================================
@@ -473,7 +471,7 @@ def validate_metrics(model, loader, device, num_classes: int = 7,
             s_feat_list.append(mini_f)
             s_mask_list.append(mini_m_r)
 
-        support_features = torch.cat(s_feat_list, dim=0)
+        support_features = [torch.cat([s[i] for s in s_feat_list], dim=0) for i in range(4)]
         support_masks_r = torch.cat(s_mask_list, dim=0)
 
         # =======================================================
@@ -580,7 +578,7 @@ def main():
     # Hyperparameters
     parser.add_argument("--epochs",      type=int,   default=100)
     parser.add_argument("--batch_size",  type=int,   default=4)
-    parser.add_argument("--lr",          type=float, default=1e-4)
+    parser.add_argument("--lr",          type=float, default=5e-5)
     parser.add_argument("--alpha",       type=float, default=0.5,
                         help="Trọng số CE trong CombinedLoss (0=Dice only, 1=CE only)")
     parser.add_argument("--amp",         action="store_true",
@@ -678,7 +676,7 @@ def main():
     # ---- Model ----
     model = DINO_AugSeg(
         encoder=backbone,
-        num_classes=args.num_classes,
+        num_classes=args.n_way + 1,
         model_type=model_type,          # lấy từ backbone table, không cần truyền tay
         # decoder_type=args.decoder,
         use_wt_aug=args.use_wt_aug,
@@ -694,7 +692,7 @@ def main():
     scheduler_warmup = optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, total_iters=warmup_epochs)
     scheduler_cosine = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs-warmup_epochs, eta_min=1e-6)
     scheduler = optim.lr_scheduler.SequentialLR(optimizer, schedulers=[scheduler_warmup, scheduler_cosine], milestones=[warmup_epochs])
-    criterion = CombinedHardLoss(alpha=args.alpha,ignore_index=255,class_weights=None,keep_ratio=0.8)
+    criterion = CombinedLoss(alpha=args.alpha)
 
     scaler = None
     if args.amp and torch.cuda.is_available():
